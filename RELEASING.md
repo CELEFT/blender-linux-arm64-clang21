@@ -1,62 +1,68 @@
-# Releasing Blender Linux ARM64
+# Releasing Blender Linux ARM64 (Snapdragon 8s Gen 3)
 
-This document covers generating installers and publishing builds. Installation, feature compatibility, building from source and verification are documented in [README.md](README.md).
+This document covers packaging and publishing. Installation, build controls, verification and the device checklist are in [README.md](README.md). The Chinese handoff guide is [docs/SNAPDRAGON-8S-GEN3.zh-CN.md](docs/SNAPDRAGON-8S-GEN3.zh-CN.md).
 
 ## Publish through GitHub Actions
 
-In the repository, open **Actions → Build Blender ARM64 → Run workflow** and select `main` with the desired build recipe.
+Open **Actions → Build Blender ARM64 Snapdragon → Run workflow**.
 
-- **Blender version:** leave blank to select the newest stable upstream tag, or enter a stable version such as `5.2.2`.
+- **Blender version:** blank selects the newest stable upstream tag. Pin a version such as `5.2.3` for a reproducible release; use a 5.3.x stable tag once upstream publishes one.
 - **Dependency ref:** normally leave blank. Supply a compatible official ARM64 library commit or branch when automatic selection cannot find a matching bundle. The resolved commit is always recorded.
+- **Runner:** defaults to `ubuntu-26.04-arm`. Override only with another native ARM64 runner when that label is unavailable.
+- **Build jobs:** default `4`. Use `2` for memory-constrained runners or device builds.
+- **Mesa PPA:** defaults to `ppa:kisak/kisak-mesa`. It is attempted but non-fatal; CI may fall back to the Ubuntu archive Mesa. Record the actual installed version in `logs/runtime-versions.txt` and `BUILD-INFO.json`.
+- **Minimal features:** disables Embree and OpenImageDenoise if those dependencies are the failure point.
+- **Download dependency sources:** warms and caches the pinned `dependency-sources/` directory.
+- **Publish release:** off by default. Download and inspect artifacts before enabling a release run.
 
-The workflow runs only when manually triggered. Pushes, tags and new upstream Blender releases do not start it.
+The workflow:
 
-The runner builds natively on Ubuntu 24.04 ARM64 with GCC 14 and native Cycles tuning disabled. It checks CPU rendering, enabled features, software OpenGL and GUI startup under Xvfb. It then creates the Debian package, installs it on the runner, and tests its command and Auto graphics launcher.
+- builds natively on Ubuntu 26.04 ARM64;
+- uses Clang 21, LLD 21 and ThinLTO with `-mcpu=cortex-x4+nosve+nosve2`;
+- saves the prepared source/LFS cache after download with `actions/cache/save@v4` and `if: always()`;
+- checks CPU Cycles, software OpenGL and GUI startup under Xvfb;
+- runs a non-blocking Vulkan probe (hosted runners usually have no Turnip-compatible GPU);
+- creates the Debian package, source archive, metadata and checksums;
+- installs the generated `.deb` on the runner and verifies its Auto graphics launcher.
 
-After verification passes, the workflow uploads build artifacts and publishes a GitHub Release with the same files. Publishing uses the built-in `GITHUB_TOKEN` with `contents: write` permission; no personal access token is needed. The release tag points to the exact recipe commit used by the workflow.
-
-Tags include the Blender version, OS, run number and attempt, for example `v5.2.2-ubuntu24.04-arm64-r4-a1`. Rebuilds and reruns receive separate tags and releases.
+Vulkan failures on a hosted runner are reported as warnings, not build failures. A release still needs a real-device Vulkan/OpenGL/Cycles checklist before it should be handed to users.
 
 ## Release contents
 
-Each published release has a version/build title, installation and compatibility notes, a link to its workflow logs, and four attached files:
-
 | File | Contents |
 | --- | --- |
-| `blender-linux-arm64_<version>-<revision>+<build-os>_arm64.deb` | Installer with command-line and desktop launchers and automatic graphics selection. |
-| `blender-<version>-source.tar.xz` | Blender source, build scripts, feature configuration, documentation, workflow and dependency source manifest. |
-| `BUILD-INFO.json` | Resolved source and library commits, build environment, CPU settings and package metadata. |
-| `SHA256SUMS` | Checksums for the installer, source archive and metadata. |
+| `blender-linux-arm64_<version>-<revision>+<build-os>_arm64.deb` | Installer with CLI/desktop launchers and Auto graphics selection. |
+| `blender-<version>-source.tar.xz` | Blender source, recipe scripts, feature configuration, docs, workflow and dependency source manifest. |
+| `BUILD-INFO.json` | Source/dependency commits, compiler, CPU flags, LTO, Vulkan/Embree/OIDN state and packaging metadata. |
+| `SHA256SUMS` | Checksums for installer, source archive and metadata. |
 
-GitHub also provides its standard source ZIP and tarball for the tagged repository commit. Those contain this repository's build recipe; the attached source archive includes Blender's source.
+GitHub also provides source ZIP/tarball of the tagged recipe repository. The attached source archive is the one that includes Blender's source.
 
-Build artifacts are retained in Actions for 30 days. Diagnostic logs are uploaded on both success and failure and retained for 14 days. GitHub Release assets are separate from those temporary artifacts.
-
-Hosted installers target Ubuntu 24.04 ARM64. Packages built locally use the local distribution label, such as `debian13`. Compatibility with other distributions and devices requires separate testing.
+Tags include the Blender version, target, run number and attempt, for example `v5.2.3-snapdragon8s-arm64-r12-a1`. Rebuilds receive separate tags/releases when publishing is enabled.
 
 ## Package a local build
 
-Build and verify Blender using the instructions in [README.md](README.md), then run:
+Build and verify Blender first, then run:
 
 ```sh
 ./package-release.sh
 ```
 
-Keep the same `BLENDER_INSTALL_DIR` setting if you chose a custom installation. Packaging writes the installer, source archive, metadata and checksums to `release/`. It preserves third-party license notices, adds the Auto launcher and desktop integration, and generates system-library dependencies with `dpkg-shlibdeps`. Package files are root-owned; creating them does not require root.
+Keep the same `BLENDER_INSTALL_DIR` setting used by the build. Packaging writes files to `release/`. It preserves third-party notices, adds the Auto launcher and desktop integration, and resolves system dependencies with `dpkg-shlibdeps`.
 
-The default package revision is `1`. Set a positive revision for another build of the same Blender version:
+Set a positive revision if packaging another build of the same Blender version:
 
 ```sh
 BLENDER_PACKAGE_REVISION=2 ./package-release.sh
 ```
 
-The workflow uses its run number as the package revision. Check the generated assets from their output directory:
+Validate the assets:
 
 ```sh
 cd release
 sha256sum -c SHA256SUMS
 ```
 
-To publish a local package, create a release in the repository's **Releases** page, select the recipe commit used for that build, and attach the four files listed above. Describe the actual build OS and tested hardware in its notes. Local packaging prepares files; the GitHub Actions workflow performs automatic publication for hosted builds.
+The source archive intentionally includes the unmodified Blender source plus the exact recipe and dependency source manifest needed to audit/rebuild. It excludes Git metadata and the precompiled library payload. `BUILD-INFO.json` records the exact library commit so the dependency bundle can be fetched separately.
 
-Source checkouts, downloaded libraries, build directories, logs and generated release files are ignored by Git. Commit the build recipe and documentation, and attach generated installers and archives to releases.
+Source checkouts, downloaded libraries, build directories, logs and generated release files are ignored by Git. Commit recipe/documentation changes and attach generated installers/archives to releases rather than committing binaries.

@@ -1,28 +1,58 @@
-name: Build Blender ARM64
-run-name: Blender ARM64 — ${{ inputs.blender_version || 'latest stable' }}
+name: Build Blender ARM64 Snapdragon
+run-name: Blender ARM64 Snapdragon — ${{ inputs.blender_version || 'latest stable' }}
 
 on:
   workflow_dispatch:
     inputs:
       blender_version:
-        description: 'Stable Blender version (blank selects newest stable tag)'
+        description: 'Stable Blender version (blank selects newest stable tag; 5.2.x/5.3.x supported)'
         required: false
         type: string
       dependency_ref:
         description: 'Optional official ARM64 library commit/branch override'
         required: false
         type: string
+      runner:
+        description: 'ARM64 runner label'
+        required: false
+        default: ubuntu-26.04-arm
+        type: string
+      build_jobs:
+        description: 'Parallel compile jobs (use 2 on low-RAM devices; CI default 4)'
+        required: false
+        default: '4'
+        type: string
+      mesa_ppa:
+        description: 'Mesa PPA to try (leave blank to use Ubuntu packages)'
+        required: false
+        default: ppa:kisak/kisak-mesa
+        type: string
+      minimal_features:
+        description: 'Disable Embree and OpenImageDenoise fallback-heavy dependencies'
+        required: false
+        default: false
+        type: boolean
+      download_dependency_sources:
+        description: 'Download and cache all pinned dependency source archives'
+        required: false
+        default: false
+        type: boolean
+      publish_release:
+        description: 'Publish a GitHub Release after all checks pass'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: manual-arm64-build
+  group: blender-snapdragon-arm64-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   build:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ${{ inputs.runner }}
     permissions:
       contents: write
     timeout-minutes: 360
@@ -30,59 +60,181 @@ jobs:
       run:
         shell: bash
     env:
-      # Blender 5.2 requires GCC 14; Ubuntu 24.04 defaults to GCC 13.
-      CC: gcc-14
-      CXX: g++-14
+      # Ubuntu 26.04 ships Clang/LLD 21 in the native ARM64 archive.
+      CC: clang-21
+      CXX: clang++-21
+      LD: ld.lld-21
+      AR: llvm-ar-21
+      RANLIB: llvm-ranlib-21
       BLENDER_VERSION: ${{ inputs.blender_version }}
       BLENDER_DEPENDENCY_REF: ${{ inputs.dependency_ref }}
-      BLENDER_BUILD_JOBS: '4'
-      BLENDER_PACKAGE_REVISION: ${{ github.run_number }}
-      # Hosted runner CPU differs from Pi 5; avoid its native CPU tuning.
+      BLENDER_BUILD_JOBS: ${{ inputs.build_jobs }}
+      BLENDER_MINIMAL_FEATURES: ${{ inputs.minimal_features && '1' || '0' }}
+      BLENDER_CPU_FLAGS: '-mcpu=cortex-x4+nosve+nosve2'
+      BLENDER_OPTIMIZATION_FLAG: -O3
       BLENDER_NATIVE_ONLY: 'OFF'
+      BLENDER_PACKAGE_REVISION: ${{ github.run_number }}
+      BLENDER_INSTALL_DIR: ${{ runner.temp }}/blender-install
+      BLENDER_BUILD_DIR: ${{ runner.temp }}/blender-build
+      MESA_PPA: ${{ inputs.mesa_ppa }}
       LIBGL_ALWAYS_SOFTWARE: '1'
+
     steps:
       - name: Check out build recipe
         uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - name: Install build and software graphics packages
+      - name: Show runner resources
         run: |
-          sudo apt-get update
-          sudo apt-get install -y git-lfs gh cmake ninja-build build-essential gcc-14 g++-14 python3 xz-utils pkg-config dpkg-dev binutils \
-            libx11-dev libxxf86vm-dev libxi-dev libxfixes-dev libxrender-dev \
-            libxrandr-dev libxcursor-dev libxinerama-dev libegl-dev libwayland-dev \
-            libdecor-0-dev libdbus-1-dev libxkbcommon-dev libsm-dev libice-dev \
-            libvulkan-dev libpulse-dev libjack-jackd2-dev libasound2-dev \
-            libgl1-mesa-dri libegl-mesa0 libopengl0 xvfb xauth
-          echo "BLENDER_INSTALL_DIR=$RUNNER_TEMP/blender-install" >> "$GITHUB_ENV"
-          "$CC" --version
-          "$CXX" --version
+          df -h .
+          free -h || true
+          uname -a
+          nproc
+
+      - name: Free runner disk space
+        run: |
+          # ARM hosted runners are tight on disk once Blender source, LTO
+          # objects and the portable install coexist.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc             /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo apt-get clean
           df -h .
 
-      - name: Fetch stable source and ARM64 libraries
+      - name: Bootstrap apt helper
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y software-properties-common
+
+      - name: Add Mesa PPA for Vulkan/OpenGL runtime testing
+        continue-on-error: true
+        env:
+          MESA_PPA: ${{ inputs.mesa_ppa }}
+        run: |
+          if [[ -z "$MESA_PPA" ]]; then
+            echo 'MESA_PPA is empty; using Ubuntu archive Mesa.'
+            exit 0
+          fi
+          if sudo add-apt-repository -y "$MESA_PPA"; then
+            sudo apt-get update
+            echo "MESA_PPA_USED=$MESA_PPA" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Could not add $MESA_PPA; continuing with the Ubuntu archive Mesa."
+          fi
+
+      - name: Install Clang 21, build and graphics packages
+        run: |
+          sudo apt-get install -y \
+            git git-lfs cmake ninja-build build-essential pkg-config dpkg-dev binutils \
+            clang-21 lld-21 llvm-21 libclang-rt-21-dev \
+            python3 python3-dev xz-utils \
+            libx11-dev libxxf86vm-dev libxi-dev libxfixes-dev libxrender-dev \
+            libxrandr-dev libxcursor-dev libxinerama-dev libegl-dev libegl1-mesa-dev \
+            libwayland-dev libdecor-0-dev libdbus-1-dev libxkbcommon-dev \
+            libsm-dev libice-dev libvulkan-dev vulkan-tools mesa-vulkan-drivers \
+            libpulse-dev libjack-jackd2-dev libasound2-dev libgl1-mesa-dri libegl-mesa0 libopengl0 \
+            xvfb xauth
+          echo '--- compiler versions ---'
+          clang-21 --version
+          clang++-21 --version
+          ld.lld-21 --version | head -1
+          llvm-ar-21 --version | head -1
+          echo '--- runtime graphics versions ---'
+          mkdir -p logs
+          {
+            printf 'mesa_vulkan_drivers=%s\n' "$(dpkg-query -W -f='${Version}' mesa-vulkan-drivers 2>/dev/null || echo unknown)"
+            printf 'libgl1_mesa_dri=%s\n' "$(dpkg-query -W -f='${Version}' libgl1-mesa-dri 2>/dev/null || echo unknown)"
+            printf 'libvulkan1=%s\n' "$(dpkg-query -W -f='${Version}' libvulkan1 2>/dev/null || echo unknown)"
+            printf 'mesa_ppa=%s\n' "${MESA_PPA_USED:-none}"
+            printf 'runner=%s\n' "$RUNNER_IMAGE"
+          } | tee logs/runtime-versions.txt
+          df -h .
+
+      - name: Restore prepared source and LFS cache
+        id: source-cache
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            source
+            dependency-sources
+          key: blender-src-${{ runner.os }}-${{ runner.arch }}-${{ inputs.blender_version || 'latest' }}-${{ inputs.dependency_ref || 'auto' }}-${{ hashFiles('prepare-source.py', 'generate-dependency-manifest.cmake') }}
+
+      - name: Recover cached Git worktrees
+        run: |
+          # A failed earlier prepare may have saved a partial worktree. The CI
+          # cache is generated state, so restore tracked files before prepare.
+          export GIT_LFS_SKIP_SMUDGE=1
+          for repo in source source/lib/linux_arm64; do
+            if [[ -e "$repo/.git" ]] && git -C "$repo" rev-parse --verify HEAD >/dev/null 2>&1; then
+              git -C "$repo" reset --hard HEAD
+            fi
+          done
+
+      - name: Resolve Blender source and ARM64 libraries
         id: source
         run: |
-          ./prepare-source.sh 2>&1 | tee prepare.log
+          mkdir -p logs dependency-sources
+          ./prepare-source.sh 2>&1 | tee logs/prepare.log
           version=$(python3 -c 'import json; print(json.load(open("logs/build-info.json"))["version"])')
+          os_id=$(. /etc/os-release; printf '%s%s' "$ID" "$VERSION_ID")
           echo "BLENDER_VERSION=$version" >> "$GITHUB_ENV"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          mv prepare.log logs/prepare.log
-          # LFS objects duplicate hydrated files; keep the checkout and source commit.
-          rm -rf source/.git/lfs/objects source/lib/linux_arm64/.git/lfs/objects
+          echo "os_id=$os_id" >> "$GITHUB_OUTPUT"
+          grep -E 'source_commit|dependency_commit|dependency_ref' logs/build-info.json
 
-      - name: Build and install
-        run: ./build-blender.sh
-
-      - name: Verify CPU rendering and software OpenGL
+      - name: Download pinned dependency sources
+        if: ${{ inputs.download_dependency_sources }}
         run: |
-          xvfb-run -a -s '-screen 0 1280x720x24' "$BLENDER_INSTALL_DIR/blender" \
+          mkdir -p logs
+          python3 fetch-dependency-source.py --all --output dependency-sources \
+            2>&1 | tee logs/fetch-dependency-sources.log
+
+      - name: Save prepared source and dependency-download cache
+        if: always() && steps.source-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            source
+            dependency-sources
+          key: ${{ steps.source-cache.outputs.cache-primary-key }}
+
+      - name: Configure and build Blender
+        run: |
+          mkdir -p logs
+          ./build-blender.sh 2>&1 | tee logs/build-step.log
+
+      - name: Verify CPU Cycles and software OpenGL
+        run: |
+          xvfb-run -a -s '-screen 0 1280x720x24' \
+            env LIBGL_ALWAYS_SOFTWARE=1 "$BLENDER_INSTALL_DIR/blender" \
             --gpu-backend opengl -noaudio --background --factory-startup \
             --python-exit-code 1 --python verify-build.py 2>&1 | tee logs/verify.log
+          grep -q '^BUILD_VERIFIED ' logs/verify.log
+          python3 -c 'import json; assert json.load(open("logs/compile-flags.json"))["status"] == "PASS"'
 
-      - name: Verify GUI startup
+      - name: Probe Vulkan backend (non-blocking diagnostic on virtual runners)
         run: |
-          timeout 120s xvfb-run -a -s '-screen 0 1280x720x24' "$BLENDER_INSTALL_DIR/blender" \
+          set +e
+          vulkaninfo --summary > logs/vulkaninfo.log 2>&1
+          vk_rc=$?
+          timeout 120s xvfb-run -a -s '-screen 0 1280x720x24' \
+            "$BLENDER_INSTALL_DIR/blender" --gpu-backend vulkan -noaudio \
+            --factory-startup --python-exit-code 1 --python verify-vulkan.py \
+            > logs/verify-vulkan.log 2>&1
+          blender_rc=$?
+          cat logs/verify-vulkan.log
+          if [[ $vk_rc -ne 0 || $blender_rc -ne 0 ]] || ! grep -q '^VULKAN_VERIFIED ' logs/verify-vulkan.log; then
+            echo '::warning::Vulkan probe did not pass. This is expected on runners without a Turnip-compatible GPU; validate on the Snapdragon device.'
+          else
+            echo 'Vulkan backend verified on this runner.'
+          fi
+          exit 0
+
+      - name: Verify GUI startup with software OpenGL
+        run: |
+          timeout 120s xvfb-run -a -s '-screen 0 1280x720x24' \
+            env LIBGL_ALWAYS_SOFTWARE=1 "$BLENDER_INSTALL_DIR/blender" \
             --gpu-backend opengl -noaudio --factory-startup \
             --python-exit-code 1 --python verify-ui.py 2>&1 | tee logs/verify-ui.log
           grep -q '^UI_VERIFIED ' logs/verify-ui.log
@@ -92,9 +244,10 @@ jobs:
           ./package-release.sh
           {
             echo '### Build complete'
-            echo "Blender $BLENDER_VERSION, Linux ARM64, built on Ubuntu 24.04."
-            echo 'Download the .deb installer, source archive, metadata and checksums from Artifacts below.'
-            echo 'See BUILD-INFO.json for resolved source and dependency commits.'
+            echo "Blender $BLENDER_VERSION, Linux ARM64, Clang 21 + ThinLTO, built on ${{ steps.source.outputs.os_id }}."
+            echo "CPU target: \`$BLENDER_CPU_FLAGS\` (SVE/SVE2 disabled)."
+            echo 'Download the .deb, source archive, metadata and checksums from the artifacts below.'
+            echo 'A Vulkan probe warning is not a build failure when the runner has no Turnip GPU; run the device checklist before installation.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify installed Debian package and Auto graphics
@@ -111,30 +264,31 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: blender-${{ steps.source.outputs.version }}-ubuntu24.04-arm64
+          name: blender-${{ steps.source.outputs.version }}-${{ steps.source.outputs.os_id }}-arm64-snapdragon8s
           path: release/
           compression-level: 0
           if-no-files-found: error
           retention-days: 30
 
       - name: Publish GitHub Release
+        if: ${{ inputs.publish_release }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="v${BLENDER_VERSION}-ubuntu24.04-arm64-r${BLENDER_PACKAGE_REVISION}-a${GITHUB_RUN_ATTEMPT}"
+          tag="v${BLENDER_VERSION}-snapdragon8s-arm64-r${BLENDER_PACKAGE_REVISION}-a${GITHUB_RUN_ATTEMPT}"
           notes="$RUNNER_TEMP/blender-release-notes.md"
           {
-            printf 'Unofficial Blender %s for Ubuntu 24.04 ARM64.\n\n' "$BLENDER_VERSION"
-            printf 'CPU-only Cycles with automatic graphics selection: Vulkan, OpenGL, then software OpenGL.\n\n'
-            printf 'Download the .deb installer and SHA256SUMS. Verify the checksum, then install with `sudo apt install ./blender-linux-arm64_*.deb`.\n\n'
-            printf 'The source archive contains Blender source and the build recipe. BUILD-INFO.json records the exact source, dependency and recipe commits. See the repository README for CPU and distribution compatibility.\n\n'
+            printf 'Unofficial Blender %s for Snapdragon 8s Gen 3 Linux containers (ARM64).\n\n' "$BLENDER_VERSION"
+            printf 'Built with Clang 21, LLD and ThinLTO. CPU target `-mcpu=cortex-x4+nosve+nosve2`; CPU Cycles plus Vulkan/OpenGL viewport backends.\n\n'
+            printf 'Download the `.deb` and `SHA256SUMS`. This package was built for %s ARM64 and targets proot/chroot; verify the checksum before installing.\n\n' '${{ steps.source.outputs.os_id }}'
+            printf 'Validate Vulkan with the device checklist in README.md. A CI Vulkan warning only means the GitHub runner lacked a Turnip-capable GPU.\n\n'
             printf '[Build and verification logs](%s/%s/actions/runs/%s).\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
           } > "$notes"
           (cd release && sha256sum -c SHA256SUMS)
           gh release create "$tag" \
             release/*.deb release/*-source.tar.xz release/BUILD-INFO.json release/SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "Blender $BLENDER_VERSION — Ubuntu 24.04 ARM64 (build $BLENDER_PACKAGE_REVISION, attempt $GITHUB_RUN_ATTEMPT)" \
+            --title "Blender $BLENDER_VERSION — Snapdragon 8s Gen 3 ARM64 (build $BLENDER_PACKAGE_REVISION, attempt $GITHUB_RUN_ATTEMPT)" \
             --notes-file "$notes"
           printf '\n[GitHub Release](%s/%s/releases/tag/%s)\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$tag" >> "$GITHUB_STEP_SUMMARY"
 

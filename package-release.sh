@@ -33,7 +33,8 @@ python3 "$recipe_dir/package-deb.py" --payload "$staging/$folder" \
 cp "$release_dir/BUILD-INFO.json" "$staging/BUILD-INFO.json"
 recipe_files=(README.md RELEASING.md LICENSE build-blender.sh build-settings.sh \
     prepare-source.sh prepare-source.py generate-dependency-manifest.cmake package-release.sh package-deb.py blender-launcher.py \
-    fetch-dependency-source.py verify-build.py verify-ui.py config .github/workflows/manual-build.yml)
+    fetch-dependency-source.py verify-build.py verify-compile-flags.py verify-ui.py verify-vulkan.py \
+    docs config .github/workflows/manual-build.yml)
 tar -cJf "$release_dir/$source_name" \
     --exclude=.git --exclude=source/lib --exclude=source/tests/data \
     -C "$project_dir" source -C "$recipe_dir" "${recipe_files[@]}" \

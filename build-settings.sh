@@ -19,6 +19,11 @@ fi
   echo 'Run ./prepare-source.sh to select a stable Blender version first.' >&2
   return 1
 }
+IFS=. read -r version_major version_minor version_patch <<< "$blender_version"
+if (( version_major < 5 || (version_major == 5 && version_minor < 2) )); then
+  echo "This recipe requires Blender 5.2 or newer, got $blender_version." >&2
+  return 1
+fi
 if [[ -n "${BLENDER_VERSION:-}" && "$BLENDER_VERSION" != "$blender_version" ]]; then
   echo 'Requested version differs from the prepared source. Run ./prepare-source.sh first.' >&2
   return 1

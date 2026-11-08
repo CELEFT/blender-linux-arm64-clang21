@@ -33,7 +33,7 @@ def main():
             parser.error(f'Missing {command}; install dpkg-dev and binutils.')
     args.output.mkdir(parents=True, exist_ok=True)
     package_version = f'{args.version}-{revision}+{args.os_label}'
-    maintainer = os.environ.get('BLENDER_PACKAGE_MAINTAINER', 'Snowblaze <Snowblaze@users.noreply.github.com>')
+    maintainer = os.environ.get('BLENDER_PACKAGE_MAINTAINER', 'CELEFT <CELEFT@users.noreply.github.com>')
     if '\n' in maintainer or '\r' in maintainer or not re.fullmatch(r'.+ <[^<>\s]+@[^<>\s]+>', maintainer):
         parser.error('Invalid BLENDER_PACKAGE_MAINTAINER.')
     work = args.payload.resolve().parent/'deb-work'
@@ -66,9 +66,9 @@ Maintainer: {maintainer}
 
 Package: {PACKAGE}
 Architecture: arm64
-Description: Unofficial Blender for Linux ARM64
+Description: Unofficial Blender for Snapdragon 8s Gen 3 Linux ARM64
 ''')
-    (control_dir/'control').write_text(f'Package: {PACKAGE}\nVersion: {package_version}\nArchitecture: arm64\nMaintainer: {maintainer}\nDescription: Unofficial Blender for Linux ARM64\n')
+    (control_dir/'control').write_text(f'Package: {PACKAGE}\nVersion: {package_version}\nArchitecture: arm64\nMaintainer: {maintainer}\nDescription: Unofficial Blender for Snapdragon 8s Gen 3 Linux ARM64\n')
     bin_dir = package_root/'usr/bin'
     bin_dir.mkdir(parents=True)
     launcher = payload/'blender-launcher.py'
@@ -80,8 +80,8 @@ Description: Unofficial Blender for Linux ARM64
     applications = package_root/'usr/share/applications'
     applications.mkdir(parents=True)
     (applications/f'{PACKAGE}.desktop').write_text(f'''[Desktop Entry]
-Name=Blender (ARM64 Community Build)
-Comment=3D modeling, animation and rendering with automatic graphics selection
+Name=Blender (Snapdragon ARM64)
+Comment=CPU Cycles rendering and Vulkan/OpenGL graphics for Snapdragon 8s Gen 3
 Exec=/usr/bin/blender %f
 TryExec=/usr/bin/blender
 Icon={PACKAGE}
@@ -165,15 +165,15 @@ Architecture: arm64
 Section: graphics
 Priority: optional
 Maintainer: {maintainer}
-Homepage: https://github.com/Snowblaze/blender-linux-arm64
+Homepage: https://github.com/CELEFT/blender-linux-arm64-clang21
 Installed-Size: {(size+1023)//1024}
 Depends: {dependencies}
-Recommends: desktop-file-utils, hicolor-icon-theme, shared-mime-info
+Recommends: desktop-file-utils, hicolor-icon-theme, shared-mime-info, mesa-vulkan-drivers
 Provides: blender (= {args.version})
 Conflicts: blender
-Description: Unofficial stable Blender build for Linux ARM64
- CPU rendering and automatic hardware/software graphics with desktop integration.
- Built for {args.os_label}; see the included README for hardware requirements.
+Description: Unofficial Blender build for Snapdragon 8s Gen 3 Linux ARM64
+ CPU Cycles rendering and automatic Vulkan/OpenGL/software graphics selection.
+ Tuned for Cortex-X4 with SVE/SVE2 disabled. Built for {args.os_label}; see README.
 ''')
     with (control_dir/'md5sums').open('w') as hashes:
         for path in sorted((package_root/'usr').rglob('*')):

@@ -1,14 +1,29 @@
-# Blender Linux ARM64
+# Blender Linux ARM64 — Snapdragon 8s Gen 3
 
-Unofficial stable Blender builds for Linux ARM64, with CPU Cycles rendering and automatic graphics selection. Download an installer from [Releases](https://github.com/Snowblaze/blender-linux-arm64/releases), or [build Blender yourself](#build-from-source) using the scripts in this repository.
+Unofficial Blender 5.2+ builds for ARM64 Linux containers (proot/chroot) on Snapdragon 8s Gen 3 devices.
 
-Hosted packages target **Ubuntu 24.04 ARM64**. A local build has also been tested on **Raspberry Pi 5 with Debian 13**. Choose a package matching your distribution and release; these builds do not support every ARM64 CPU.
+The build targets Cortex-X4, uses Clang 21 + LLD 21 + ThinLTO, renders with CPU Cycles, and exposes Vulkan and OpenGL viewport backends. SVE and SVE2 code generation is deliberately disabled: the silicon supports SVE2, but Android kernels/containers commonly hide the feature from `HWCAP`, so an SVE instruction would crash with `SIGILL` on the device.
 
-This project is not affiliated with or endorsed by the Blender Foundation.
+This project is not affiliated with or endorsed by the Blender Foundation. A Chinese build/handoff guide is available at [docs/SNAPDRAGON-8S-GEN3.zh-CN.md](docs/SNAPDRAGON-8S-GEN3.zh-CN.md).
+
+## Fixed build policy
+
+| Item | Value |
+| --- | --- |
+| Target device | Snapdragon 8s Gen 3 (Cortex-X4 + Cortex-A720 + Cortex-A520) |
+| Build runner | Ubuntu 26.04 ARM64 / GitHub `ubuntu-26.04-arm` |
+| Blender | Newest stable 5.2.x, or 5.3.x once upstream publishes a stable tag |
+| Compiler | Clang 21 + LLD 21 |
+| CPU flags | `-mcpu=cortex-x4+nosve+nosve2 -O3 -flto=thin` |
+| Graphics | CPU Cycles + Vulkan/OpenGL viewport |
+| Disabled compute | CUDA, OptiX, HIP/HIPRT, oneAPI and their binary kernels |
+| Optional libraries | Embree and OpenImageDenoise ON by default; both can be disabled together |
+
+The recipe uses Blender's official pre-compiled ARM64 dependency bundle by default. This avoids most `make deps` failures on ARM64 while still recording exact source, library and dependency commits. `fetch-dependency-source.py` is available when the corresponding dependency sources are needed for auditing or a future source build.
 
 ## Install and run
 
-Download the `.deb` installer and `SHA256SUMS` from the same release into one directory. Run these commands there, with only the installer you want to install in that directory:
+Download the `.deb` installer and `SHA256SUMS` from one release into one directory:
 
 ```sh
 sha256sum --ignore-missing -c SHA256SUMS
@@ -16,141 +31,182 @@ sudo apt install ./blender-linux-arm64_*.deb
 blender
 ```
 
-You can also open **Blender (ARM64 Community Build)** from your application menu. The package installs Blender under `/usr/lib/blender-linux-arm64` and adds the command at `/usr/bin/blender`.
-
-The command supports Blender's normal command-line rendering and Python scripting arguments:
+The package installs Blender under `/usr/lib/blender-linux-arm64`, adds `/usr/bin/blender`, and provides a desktop entry. It conflicts with a distribution `blender` package because both provide `/usr/bin/blender`.
 
 ```sh
 blender --version
-blender --background --help
 blender --background scene.blend --render-frame 1
 ```
 
-To upgrade, install the newer `.deb` with the same `apt install` command. To uninstall:
+The raw executable is `/usr/lib/blender-linux-arm64/blender`.
 
-```sh
-sudo apt remove blender-linux-arm64
-```
+## Graphics selection on the phone
 
-The package conflicts with the distribution's `blender` package because both provide `/usr/bin/blender`. APT will propose replacing that package when necessary.
+The installed command defaults to **Auto**:
 
-If `blender` launches an older installation, check `command -v blender`. An existing `~/.local/bin/blender` may take priority over `/usr/bin/blender`; rename or remove that older launcher to use the package's command.
+1. Try hardware Vulkan.
+2. Fall back to hardware OpenGL.
+3. Fall back to Mesa software OpenGL.
 
-## Graphics selection
+Auto runs a tiny factory-settings render for each candidate and caches the result in `${XDG_CACHE_HOME:-~/.cache}/blender-linux-arm64/`. Batch CPU jobs skip the probe and use software OpenGL.
 
-The command and desktop entry use **Auto** by default. Auto tests hardware **Vulkan first**, then **OpenGL**, and falls back to Mesa software OpenGL when neither works. This affects the viewport and EEVEE; Cycles rendering uses the CPU.
-
-The first graphical launch runs a small factory-settings Workbench render for each hardware backend it tries. Each probe has a 20-second timeout. The choice is cached, so later launches reuse it. Changes to Blender, graphics drivers/devices, the kernel or relevant session settings invalidate the cache.
-
-Override Auto for one launch:
+Override for one run:
 
 ```sh
 BLENDER_GRAPHICS_MODE=hardware blender
 BLENDER_GRAPHICS_MODE=software blender
 ```
 
-Export `BLENDER_GRAPHICS_MODE` in your shell configuration for a persistent terminal preference. Probe logs and the cached choice are in `${XDG_CACHE_HOME:-~/.cache}/blender-linux-arm64/`; delete `graphics.json` to force another check.
+To force a specific backend:
 
-Explicit `--gpu-backend` arguments bypass Auto's check. Help and version commands skip probing. Background CPU jobs use software OpenGL without probing, and Auto respects an inherited `LIBGL_ALWAYS_SOFTWARE=1`. The raw executable is available at `/usr/lib/blender-linux-arm64/blender`.
+```sh
+blender --gpu-backend vulkan
+blender --gpu-backend opengl
+```
 
-Auto checks backend startup and a small render. It does not guarantee that every scene or driver workload will work, and it does not relaunch Blender after an unrelated application crash.
+Vulkan is provided by the device's Mesa/Turnip installation, not bundled in the Blender `.deb`. A known-good target combination is Mesa 26.2.6/Turnip exposed through the container. Check it before blaming Blender:
 
-## Compatibility and features
+```sh
+vulkaninfo --summary
+```
 
-Packages are labelled with their build OS. APT resolves the required system libraries and versions during installation. Python and many dependencies are bundled, but the application still relies on system graphics, windowing and audio libraries.
+If the viewport crashes on Vulkan but works with OpenGL, set:
 
-Compiler flags include `-march=armv8.2-a+dotprod+fp16+lse`. Older ARM CPUs may lack these instructions. Local builds also default to native CPU optimization for Cycles; hosted builds disable that additional tuning. Compatibility with other distributions and devices requires separate testing.
+```sh
+export BLENDER_GRAPHICS_MODE=software
+```
 
-The local Raspberry Pi 5 build was tested on Debian 13 (trixie), four Cortex-A76 cores, 16 GB RAM and Mesa 26.2.2. That driver exposes insufficient hardware OpenGL support and lacks Vulkan features Blender requires. Software OpenGL works on this setup, with limited viewport and EEVEE performance.
-
-The feature configuration follows Blender's official Windows release preset with ARM64 exclusions, adapted for Linux windowing and audio.
-
-- **Enabled:** CPU Cycles, OSL, Embree, path guiding, OpenImageDenoise, FFmpeg, Freestyle, USD/Hydra, MaterialX, Alembic, OpenVDB/NanoVDB, fluids, OpenXR, OpenGL and Vulkan.
-- **Disabled:** CUDA, OptiX, HIP/HIPRT, oneAPI and their GPU kernels, standalone Cycles, the standalone Hydra render delegate, an importable `bpy` target, FriBidi and HarfBuzz.
-
-The CPU-only package omits optional OpenImageDenoise GPU plugins, so it does not require NVIDIA, HIP or SYCL drivers. An enabled graphics backend still needs a compatible driver to use hardware acceleration.
+or select OpenGL in Blender preferences. The build itself still requires Vulkan headers/libs at compile time.
 
 ## Build from source
 
-Build on native Linux ARM64. The scripts fetch stable Blender source and official precompiled ARM64 libraries, then configure and compile Blender. They do not rebuild all dependencies; upstream dependency build recipes are included in Blender's source.
+Build natively on ARM64. Cross-compilation is not supported by this recipe.
 
-Install the initial tools and clone the repository:
+Ubuntu 26.04 ARM64 is the CI/reference build environment. Install the toolchain and runtime headers:
 
 ```sh
 sudo apt update
-sudo apt install git git-lfs cmake ninja-build build-essential python3 xz-utils dpkg-dev binutils
-git clone https://github.com/Snowblaze/blender-linux-arm64.git
-cd blender-linux-arm64
+sudo apt install -y \
+  git git-lfs cmake ninja-build build-essential pkg-config dpkg-dev binutils \
+  clang-21 lld-21 llvm-21 libclang-rt-21-dev python3 python3-dev xz-utils \
+  libx11-dev libxxf86vm-dev libxi-dev libxfixes-dev libxrender-dev \
+  libxrandr-dev libxcursor-dev libxinerama-dev libegl-dev libegl1-mesa-dev \
+  libwayland-dev libdecor-0-dev libdbus-1-dev libxkbcommon-dev \
+  libsm-dev libice-dev libvulkan-dev vulkan-tools mesa-vulkan-drivers \
+  libpulse-dev libjack-jackd2-dev libasound2-dev libgl1-mesa-dri libegl-mesa0 libopengl0 \
+  xvfb xauth
 ```
 
-Blender 5.2 requires GCC 14 or newer. On Ubuntu 24.04, install and select it before configuring:
+Clone the recipe and fetch Blender plus the matching official ARM64 libraries:
 
 ```sh
-sudo apt install gcc-14 g++-14
-export CC=gcc-14 CXX=g++-14
-```
-
-Blender declares CMake 3.21 as its minimum. This recipe has been tested with CMake 3.31.6, GCC 14.2, Ninja and four build jobs. Allow several gigabytes for source, libraries, object files and installation. Compiler or dependency requirements can change in newer Blender releases.
-
-Fetch the newest stable version, install the remaining build dependencies, and build:
-
-```sh
+git clone https://github.com/CELEFT/blender-linux-arm64-clang21.git
+cd blender-linux-arm64-clang21
 ./prepare-source.sh
-sudo python3 source/build_files/build_environment/install_linux_packages.py
+```
+
+Pin a supported stable release when required:
+
+```sh
+BLENDER_VERSION=5.2.3 ./prepare-source.sh
+```
+
+The source downloader uses the Blender Git host first and GitHub as a fallback. Override either endpoint with `BLENDER_SOURCE_URL` / `BLENDER_LIBRARY_URL` for a domestic or private mirror.
+
+Build and install:
+
+```sh
 ./build-blender.sh
 ```
 
-To select a specific stable version, set `BLENDER_VERSION` when preparing the source, for example `BLENDER_VERSION=5.2.2 ./prepare-source.sh`. Alpha, beta and release-candidate tags are excluded from automatic selection.
+Useful controls:
 
-The default installation is `~/.local/opt/blender-<version>-linux-arm64`, outside the checkout. Set `BLENDER_INSTALL_DIR` to an absolute path to choose another location, and use that setting for building, verification and packaging. Local builds produce the raw Blender executable; the Auto launcher is added by Debian packaging.
+```sh
+# Low-memory phone/container: two compile jobs and one link job.
+BLENDER_BUILD_JOBS=2 ./build-blender.sh
 
-Running `./build-blender.sh` again resumes the build. Use `BLENDER_BUILD_JOBS=2 ./build-blender.sh` to reduce compile concurrency, or set `BLENDER_NATIVE_ONLY=OFF` to disable native Cycles tuning as the hosted workflow does. When changing compilers, choose a new `BLENDER_BUILD_DIR` because CMake caches the compiler selection. Feature overrides are in `config/windows-arm64-features.cmake`.
+# If Embree or OpenImageDenoise fails to build/link, use the documented fallback.
+BLENDER_MINIMAL_FEATURES=1 ./build-blender.sh
 
-### Verify and launch your build
+# Reuse a different build/install location.
+BLENDER_BUILD_DIR=/path/to/build BLENDER_INSTALL_DIR=/path/to/install ./build-blender.sh
+```
 
-From the checkout, resolve the installation path and run the render and feature checks:
+`build-blender.sh` refuses to run unless the compiler accepts the exact Cortex-X4 no-SVE target, verifies every C/C++/ASM translation unit through `compile_commands.json`, and records the policy in `logs/build-info.json`. If `BLENDER_CPU_FLAGS` is overridden it must still contain both `+nosve` and `+nosve2`.
 
-```bash
+The default install directory is `~/.local/opt/blender-<version>-linux-arm64`. The default build directory is `build/<version>`.
+
+## Verify a build
+
+CPU Cycles, build features, software OpenGL and a small render:
+
+```sh
 project_dir="$PWD"
 source ./build-settings.sh
-LIBGL_ALWAYS_SOFTWARE=1 "$install_dir/blender" --gpu-backend opengl -noaudio --background --factory-startup --python-exit-code 1 --python verify-build.py
+xvfb-run -a -s '-screen 0 1280x720x24' \
+  env LIBGL_ALWAYS_SOFTWARE=1 "$install_dir/blender" \
+  --gpu-backend opengl -noaudio --background --factory-startup \
+  --python-exit-code 1 --python verify-build.py
 ```
 
-From a graphical desktop session, check GUI startup:
+A graphics desktop is needed for the GUI startup test:
 
 ```sh
-LIBGL_ALWAYS_SOFTWARE=1 "$install_dir/blender" --gpu-backend opengl -noaudio --factory-startup --python-exit-code 1 --python verify-ui.py
+xvfb-run -a -s '-screen 0 1280x720x24' \
+  env LIBGL_ALWAYS_SOFTWARE=1 "$install_dir/blender" \
+  --gpu-backend opengl -noaudio --factory-startup \
+  --python-exit-code 1 --python verify-ui.py
 ```
 
-The render test prints `BUILD_VERIFIED` on success. The GUI test prints `UI_VERIFIED` or `UI_VERIFICATION_FAILED` and closes its own Blender instance. Test images, the test scene and build logs are saved in `logs/`. The tests use factory settings and leave your normal startup file unchanged.
-
-To launch the raw build with software graphics:
+Vulkan backend check (requires a usable Vulkan ICD):
 
 ```sh
-LIBGL_ALWAYS_SOFTWARE=1 "$install_dir/blender" --gpu-backend opengl
+xvfb-run -a -s '-screen 0 1280x720x24' \
+  "$install_dir/blender" --gpu-backend vulkan -noaudio \
+  --factory-startup --python-exit-code 1 --python verify-vulkan.py
 ```
 
-For creating installers and publishing builds, see [Releasing](RELEASING.md).
+Expected markers:
+
+- `BUILD_VERIFIED`
+- `CPU_FLAGS_VERIFIED`
+- `UI_VERIFIED`
+- `VULKAN_VERIFIED` when a Vulkan ICD is available
+
+## GitHub Actions
+
+The manual workflow [`.github/workflows/manual-build.yml`](.github/workflows/manual-build.yml) runs on `ubuntu-26.04-arm`. It:
+
+- installs Clang 21/LLD 21 and optionally the Mesa PPA;
+- restores/stores the prepared source and LFS cache around the download stage, including `if: always()` cache saving;
+- optionally downloads all pinned dependency source archives into the cache;
+- builds with `-mcpu=cortex-x4+nosve+nosve2 -O3 -flto=thin`;
+- verifies CPU Cycles, software OpenGL and GUI startup;
+- treats a Vulkan probe failure on a GPU-less hosted runner as a warning, not a build verdict;
+- packages the `.deb`, source archive, `BUILD-INFO.json` and checksums;
+- publishes a GitHub Release only when `publish_release` is enabled.
+
+Use the `minimal_features` input when Embree/OIDN are the failure point, and `build_jobs=2` when the runner or device is RAM-constrained. The default is no automatic release, so artifacts can be inspected first.
+
+## Device checklist before reporting a Blender bug
+
+1. Record the container OS, kernel, Mesa/Turnip version and `vulkaninfo --summary` output.
+2. Confirm SVE is hidden in the actual execution environment. A proot shell may see a different `HWCAP` than the host.
+3. Run `blender --version` and a small Cycles CPU render.
+4. Test Vulkan and OpenGL separately with `--gpu-backend vulkan` / `--gpu-backend opengl`.
+5. Use a cooling fan. A sustained Cycles render on this SoC hits a thermal wall quickly.
+6. On OOM during link or while rendering, reduce `BLENDER_BUILD_JOBS`, close background apps, and provide swap. The final ThinLTO link is deliberately limited to one job.
+
+## Compatibility and limitations
+
+- Generated code is tuned for Cortex-X4. It is not intended for older ARM64 CPUs.
+- SVE/SVE2 are explicitly absent from Blender's own generated code, but device Mesa/Turnip and system libraries must also be built compatibly.
+- Hosted `.deb` packages target Ubuntu 26.04 ARM64. Other distributions require a native rebuild and separate testing.
+- CPU Cycles is the rendering path. Hardware GPU compute backends are not shipped.
+- Exact source and ARM64 library commits are recorded in `BUILD-INFO.json`.
 
 ## Source and licensing
 
 Blender source is unmodified. The binary distribution and repository scripts use **GPL-3.0-or-later**; see [LICENSE](LICENSE). Third-party copyright and license notices are preserved in the installation's `license/` directory. No warranty is provided.
 
-Each packaged build includes `BUILD-INFO.json` with the selected version and exact source and ARM64 library commits, plus build OS, compiler, CPU optimization settings and recipe commit where available. The attached `blender-<version>-source.tar.xz` contains Blender source, required release/assets/scripts files, the build recipe and a dependency source manifest. Git metadata, precompiled libraries and unused test data are excluded.
-
-Upstream source repositories: [Blender](https://projects.blender.org/blender/blender) and [Linux ARM64 libraries](https://projects.blender.org/blender/lib-linux_arm64).
-
-`prepare-source.sh` selects a pinned ARM64 submodule, a matching release branch, or a main library bundle that identifies the selected Blender major/minor series. Set `BLENDER_DEPENDENCY_REF` to choose a compatible official library ref explicitly. The resolved commits are recorded in `logs/build-info.json`. Dependency version differences are reported; configuration and verification check whether the available bundle works with the source.
-
-The manifest is generated from the selected Blender dependency recipes into `logs/dependency-sources.tsv` and included with packaged builds as `dependency-sources.tsv`. It lists filenames, versions, hashes and Blender mirror/upstream URLs, including dependencies for other platforms and build tools.
-
-Download dependency source with checksum verification:
-
-```sh
-python3 fetch-dependency-source.py FFMPEG --output dependency-sources
-python3 fetch-dependency-source.py --all --output dependency-sources
-```
-
-The downloader uses the packaged manifest or the generated manifest in `logs/`. Dependency build recipes and patches are under `source/build_files/build_environment/`; Blender's `make deps` target builds those libraries from source. If a source mirror becomes unavailable, open an issue so its location can be restored.
-
-To reproduce a packaged build, extract the attached source archive and run `prepare-source.sh`. It uses the included version and exact library commit from `BUILD-INFO.json`. Follow the build and verification instructions above, selecting the recorded CPU optimization setting. Exact commits make inputs traceable; byte-for-byte reproducibility across different compilers and machines is not guaranteed.
+Upstream projects: [Blender](https://projects.blender.org/blender/blender), [Linux ARM64 libraries](https://projects.blender.org/blender/lib-linux_arm64).
