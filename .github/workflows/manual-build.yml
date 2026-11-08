@@ -74,8 +74,6 @@ jobs:
       BLENDER_OPTIMIZATION_FLAG: -O3
       BLENDER_NATIVE_ONLY: 'OFF'
       BLENDER_PACKAGE_REVISION: ${{ github.run_number }}
-      BLENDER_INSTALL_DIR: ${{ runner.temp }}/blender-install
-      BLENDER_BUILD_DIR: ${{ runner.temp }}/blender-build
       MESA_PPA: ${{ inputs.mesa_ppa }}
       LIBGL_ALWAYS_SOFTWARE: '1'
 
@@ -91,12 +89,17 @@ jobs:
           free -h || true
           uname -a
           nproc
+          # The runner context is not available in jobs.<job_id>.env. Export
+          # runner-specific paths through GITHUB_ENV instead.
+          echo "BLENDER_INSTALL_DIR=$RUNNER_TEMP/blender-install" >> "$GITHUB_ENV"
+          echo "BLENDER_BUILD_DIR=$RUNNER_TEMP/blender-build" >> "$GITHUB_ENV"
 
       - name: Free runner disk space
         run: |
           # ARM hosted runners are tight on disk once Blender source, LTO
           # objects and the portable install coexist.
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc             /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           sudo apt-get clean
           df -h .
 
