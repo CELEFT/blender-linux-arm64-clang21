@@ -1,40 +1,80 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Blender release options for Snapdragon 8s Gen 3 Linux containers
-# (Cortex-X4 + Cortex-A720 + Cortex-A520, proot/chroot, CPU Cycles).
-#
-# The compiler/CPU flags are injected by build-blender.sh so they can be
-# validated before CMake configures the tree. This file only fixes the
-# feature matrix that must stay identical across local and CI builds.
+# Slim Blender feature matrix for Snapdragon 8s Gen 3 Linux containers.
+# The compiler/CPU policy is injected by build-blender.sh and verified against
+# compile_commands.json. This file defines what goes into the package.
 
-include("${CMAKE_CURRENT_LIST_DIR}/windows-arm64-features.cmake")
-
-# Render with the CPU and expose the Vulkan/OpenGL viewport backends. All GPU
-# compute backends are force-disabled by windows-arm64-features.cmake.
+# CPU rendering and the two viewport backends needed on Adreno.
 set(WITH_CYCLES ON CACHE BOOL "" FORCE)
-# Blender has no separate device-CPU option; CPU is part of WITH_CYCLES.
-# The marker is retained for compatibility with the requested CMake matrix.
+# Blender builds the CPU device as part of WITH_CYCLES. Keep the marker because
+# the project brief requires it, even though Blender has no separate option.
 set(WITH_CYCLES_DEVICE_CPU ON CACHE BOOL "" FORCE)
 set(WITH_OPENGL_BACKEND ON CACHE BOOL "" FORCE)
 set(WITH_VULKAN_BACKEND ON CACHE BOOL "" FORCE)
+set(WITH_PYTHON_INSTALL ON CACHE BOOL "" FORCE)
+set(WITH_PYTHON_INSTALL_NUMPY ON CACHE BOOL "" FORCE)
 
-# Never emit runtime CPU detection or -march=native code paths: the phone is
-# often inside proot where /proc/cpuinfo and HWCAP cannot be trusted. The exact
-# Cortex-X4 target and the no-SVE decision are supplied from the command line.
+# Never use runtime CPU detection (-march=native): proot and Android kernels
+# do not reliably expose the same HWCAP as the host. The exact CPU policy is
+# supplied on the command line and checked before every build.
 set(WITH_CYCLES_NATIVE_ONLY OFF CACHE BOOL "" FORCE)
 set(WITH_CPU_CHECK OFF CACHE BOOL "" FORCE)
-
-# ThinLTO is enabled through CMAKE_INTERPROCEDURAL_OPTIMIZATION. CMake's Clang
-# support uses -flto=thin. Keep one link job to avoid OOM during the final LTO
-# link on 8-12 GiB phones and constrained runners.
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON CACHE BOOL "" FORCE)
 
-# Optional libraries are deliberately switchable. They are enabled by default
-# when using Blender's official ARM64 prebuilt libraries, and can be disabled
-# with BLENDER_MINIMAL_FEATURES=1 when either dependency fails to build.
-if(DEFINED ENV{BLENDER_WITH_EMBREE})
-  set(WITH_CYCLES_EMBREE "$ENV{BLENDER_WITH_EMBREE}" CACHE BOOL "" FORCE)
-endif()
-if(DEFINED ENV{BLENDER_WITH_OIDN})
-  set(WITH_OPENIMAGEDENOISE "$ENV{BLENDER_WITH_OIDN}" CACHE BOOL "" FORCE)
-endif()
+# GPU compute backends are not usable in this container target.
+set(WITH_CYCLES_DEVICE_CUDA OFF CACHE BOOL "" FORCE)
+set(WITH_CYCLES_DEVICE_OPTIX OFF CACHE BOOL "" FORCE)
+set(WITH_CYCLES_DEVICE_HIP OFF CACHE BOOL "" FORCE)
+set(WITH_CYCLES_DEVICE_HIPRT OFF CACHE BOOL "" FORCE)
+set(WITH_CYCLES_DEVICE_ONEAPI OFF CACHE BOOL "" FORCE)
+set(WITH_CYCLES_CUDA_BINARIES OFF CACHE BOOL "" FORCE)
+set(WITH_CYCLES_HIP_BINARIES OFF CACHE BOOL "" FORCE)
+set(WITH_CYCLES_ONEAPI_BINARIES OFF CACHE BOOL "" FORCE)
+
+# Slim package: remove large optional integrations that are not needed for a
+# CPU-Cycles viewport/render build. Cycles keeps the default SVM shading path.
+set(WITH_CYCLES_OSL OFF CACHE BOOL "" FORCE)
+set(WITH_CYCLES_EMBREE OFF CACHE BOOL "" FORCE)
+set(WITH_CYCLES_PATH_GUIDING OFF CACHE BOOL "" FORCE)
+set(WITH_OPENIMAGEDENOISE OFF CACHE BOOL "" FORCE)
+set(WITH_USD OFF CACHE BOOL "" FORCE)
+set(WITH_HYDRA OFF CACHE BOOL "" FORCE)
+set(WITH_MATERIALX OFF CACHE BOOL "" FORCE)
+set(WITH_ALEMBIC OFF CACHE BOOL "" FORCE)
+set(WITH_OPENVDB OFF CACHE BOOL "" FORCE)
+set(WITH_OPENVDB_BLOSC OFF CACHE BOOL "" FORCE)
+set(WITH_OPENVDB_3_ABI_COMPATIBLE OFF CACHE BOOL "" FORCE)
+set(WITH_NANOVDB OFF CACHE BOOL "" FORCE)
+set(WITH_FREESTYLE OFF CACHE BOOL "" FORCE)
+set(WITH_MOD_FLUID OFF CACHE BOOL "" FORCE)
+set(WITH_MOD_OCEANSIM OFF CACHE BOOL "" FORCE)
+set(WITH_XR_OPENXR OFF CACHE BOOL "" FORCE)
+set(WITH_CODEC_FFMPEG OFF CACHE BOOL "" FORCE)
+set(WITH_CODEC_SNDFILE OFF CACHE BOOL "" FORCE)
+set(WITH_AUDASPACE OFF CACHE BOOL "" FORCE)
+set(WITH_OPENAL OFF CACHE BOOL "" FORCE)
+set(WITH_JACK OFF CACHE BOOL "" FORCE)
+set(WITH_JACK_DYNLOAD OFF CACHE BOOL "" FORCE)
+set(WITH_PULSEAUDIO OFF CACHE BOOL "" FORCE)
+set(WITH_PULSEAUDIO_DYNLOAD OFF CACHE BOOL "" FORCE)
+set(WITH_PIPEWIRE OFF CACHE BOOL "" FORCE)
+set(WITH_PIPEWIRE_DYNLOAD OFF CACHE BOOL "" FORCE)
+set(WITH_SDL_AUDIO OFF CACHE BOOL "" FORCE)
+set(WITH_INTERNATIONAL OFF CACHE BOOL "" FORCE)
+set(WITH_FRIBIDI OFF CACHE BOOL "" FORCE)
+set(WITH_HARFBUZZ OFF CACHE BOOL "" FORCE)
+set(WITH_HARU OFF CACHE BOOL "" FORCE)
+set(WITH_POTRACE OFF CACHE BOOL "" FORCE)
+set(WITH_LIBMV OFF CACHE BOOL "" FORCE)
+set(WITH_LIBMV_SCHUR_SPECIALIZATIONS OFF CACHE BOOL "" FORCE)
+set(WITH_DRACO OFF CACHE BOOL "" FORCE)
+set(WITH_MESHOPTIMIZER OFF CACHE BOOL "" FORCE)
+set(WITH_DOC_MANPAGE OFF CACHE BOOL "" FORCE)
+set(WITH_PYTHON_INSTALL_REQUESTS OFF CACHE BOOL "" FORCE)
+set(WITH_TBB_MALLOC_PROXY OFF CACHE BOOL "" FORCE)
+
+# Other standalone targets are not part of the slim application package.
+set(WITH_CYCLES_STANDALONE OFF CACHE BOOL "" FORCE)
+set(WITH_CYCLES_STANDALONE_GUI OFF CACHE BOOL "" FORCE)
+set(WITH_CYCLES_HYDRA_RENDER_DELEGATE OFF CACHE BOOL "" FORCE)
+set(WITH_PYTHON_MODULE OFF CACHE BOOL "" FORCE)

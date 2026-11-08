@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Build Blender 5.2+ for native Linux ARM64 on Snapdragon 8s Gen 3.
-# The generated code targets Cortex-X4 but forcibly disables SVE/SVE2 because
+# Slim Blender 5.2+ build for native Linux ARM64 on Snapdragon 8s Gen 3.
+# The generated code targets Cortex-X4 with SVE/SVE2 forcibly disabled because
 # Android/proot commonly hides SVE from HWCAP even when the silicon has it.
 set -euo pipefail
 
@@ -10,7 +10,6 @@ project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$project_dir"
 source "$project_dir/build-settings.sh"
 
-# Prefer locally extracted tools only when explicitly present.
 if [[ -d "$project_dir/tools/usr/bin" ]]; then
   export PATH="$project_dir/tools/usr/bin:$PATH"
 fi
@@ -36,6 +35,7 @@ find_tool() {
   [[ -n "$resolved" ]] || { echo "Missing build tool: $command_name" >&2; exit 1; }
   printf '%s\n' "$resolved"
 }
+
 cmake_bin="$(find_tool cmake)"
 ninja_bin="$(find_tool ninja)"
 cc_bin="$(find_tool "$CC")"
@@ -61,8 +61,8 @@ ld_version="$("$ld_bin" --version | head -1)"
 echo "Compiler verified: $cc_version"
 echo "Linker verified: $ld_version"
 
-# Hard-code the target CPU. Native detection is unreliable inside proot and
-# would also make CI artifacts depend on whichever runner happened to execute.
+# Native CPU detection is unreliable inside proot and makes artifacts depend on
+# whichever runner compiled them. This must remain an explicit one-token policy.
 cpu_flag="${BLENDER_CPU_FLAGS:--mcpu=cortex-x4+nosve+nosve2}"
 [[ "$cpu_flag" != *[[:space:]]* ]] || { echo 'BLENDER_CPU_FLAGS must be one -mcpu token.' >&2; exit 1; }
 [[ "$cpu_flag" == *cortex-x4* ]] || { echo 'BLENDER_CPU_FLAGS must target cortex-x4.' >&2; exit 1; }
@@ -71,7 +71,7 @@ cpu_flag="${BLENDER_CPU_FLAGS:--mcpu=cortex-x4+nosve+nosve2}"
   exit 1
 }
 optimization_flag="${BLENDER_OPTIMIZATION_FLAG:--O3}"
-# Fail early if this Clang cannot emit the exact requested CPU target.
+
 probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/blender-cpu-probe.XXXXXX")"
 trap 'rm -rf -- "$probe_dir"' EXIT
 printf 'int main(void) { return 0; }\n' > "$probe_dir/probe.c"
@@ -89,22 +89,6 @@ heavy_jobs="${BLENDER_HEAVY_JOBS:-$(( jobs > 1 ? jobs - 1 : 1 ))}"
 [[ "$heavy_jobs" =~ ^[1-9][0-9]*$ ]] || { echo 'BLENDER_HEAVY_JOBS must be a positive integer.' >&2; exit 1; }
 link_jobs="${BLENDER_LINK_JOBS:-1}"
 [[ "$link_jobs" =~ ^[1-9][0-9]*$ ]] || { echo 'BLENDER_LINK_JOBS must be a positive integer.' >&2; exit 1; }
-
-as_bool() {
-  case "${1:-}" in
-    1|true|TRUE|yes|YES|on|ON) printf 'ON' ;;
-    0|false|FALSE|no|NO|off|OFF|'') printf 'OFF' ;;
-    *) echo "Invalid boolean value: $1" >&2; return 1 ;;
-  esac
-}
-minimal_features="$(as_bool "${BLENDER_MINIMAL_FEATURES:-0}")"
-if [[ "$minimal_features" == ON ]]; then
-  with_embree=OFF
-  with_oidn=OFF
-else
-  with_embree="$(as_bool "${BLENDER_WITH_EMBREE:-1}")"
-  with_oidn="$(as_bool "${BLENDER_WITH_OIDN:-1}")"
-fi
 
 mkdir -p logs
 : > logs/configure.log
@@ -149,6 +133,10 @@ cmake_args=(
   # Blender builds the CPU device whenever WITH_CYCLES is ON. Keep this marker
   # for compatibility with the project brief's requested CMake matrix.
   -DWITH_CYCLES_DEVICE_CPU=ON
+  -DWITH_CYCLES_OSL=OFF
+  -DWITH_CYCLES_EMBREE=OFF
+  -DWITH_CYCLES_PATH_GUIDING=OFF
+  -DWITH_OPENIMAGEDENOISE=OFF
   -DWITH_CYCLES_DEVICE_CUDA=OFF
   -DWITH_CYCLES_DEVICE_OPTIX=OFF
   -DWITH_CYCLES_DEVICE_HIP=OFF
@@ -157,17 +145,14 @@ cmake_args=(
   -DWITH_CYCLES_CUDA_BINARIES=OFF
   -DWITH_CYCLES_HIP_BINARIES=OFF
   -DWITH_CYCLES_ONEAPI_BINARIES=OFF
-  -DWITH_CYCLES_EMBREE="$with_embree"
-  -DWITH_OPENIMAGEDENOISE="$with_oidn"
 )
 
-echo "Configuring Blender $blender_version with Clang 21 / LLD / ThinLTO"
+echo "Configuring slim Blender $blender_version with Clang 21 / LLD / ThinLTO"
 echo "  CPU flags: $cpu_flag"
 echo "  Jobs: compile=$jobs heavy=$heavy_jobs link=$link_jobs"
-echo "  Optional libraries: Embree=$with_embree OpenImageDenoise=$with_oidn"
 "$cmake_bin" "${cmake_args[@]}" 2>&1 | tee logs/configure.log
 
-python3 - "$build_dir/CMakeCache.txt" "$with_embree" "$with_oidn" <<'PYFEATURES'
+python3 - "$build_dir/CMakeCache.txt" <<'PYFEATURES'
 import sys
 from pathlib import Path
 
@@ -177,14 +162,55 @@ for line in Path(sys.argv[1]).read_text().splitlines():
         raw_key, value = line.split('=', 1)
         cache[raw_key.split(':', 1)[0]] = value.upper()
 
-required = {
-    'WITH_CYCLES': 'ON',
-    'WITH_VULKAN_BACKEND': 'ON',
-    'WITH_OPENGL_BACKEND': 'ON',
-    'WITH_CYCLES_EMBREE': sys.argv[2],
-    'WITH_OPENIMAGEDENOISE': sys.argv[3],
-}
-disabled = (
+required_on = (
+    'WITH_CYCLES',
+    'WITH_VULKAN_BACKEND',
+    'WITH_OPENGL_BACKEND',
+    'WITH_PYTHON_INSTALL',
+)
+required_off = (
+    'WITH_CYCLES_OSL',
+    'WITH_CYCLES_EMBREE',
+    'WITH_CYCLES_PATH_GUIDING',
+    'WITH_OPENIMAGEDENOISE',
+    'WITH_USD',
+    'WITH_HYDRA',
+    'WITH_MATERIALX',
+    'WITH_ALEMBIC',
+    'WITH_OPENVDB',
+    'WITH_NANOVDB',
+    'WITH_FREESTYLE',
+    'WITH_MOD_FLUID',
+    'WITH_MOD_OCEANSIM',
+    'WITH_XR_OPENXR',
+    'WITH_CODEC_FFMPEG',
+    'WITH_CODEC_SNDFILE',
+    'WITH_AUDASPACE',
+    'WITH_OPENAL',
+    'WITH_PULSEAUDIO',
+    'WITH_JACK',
+    'WITH_PIPEWIRE',
+    'WITH_PIPEWIRE_DYNLOAD',
+    'WITH_JACK_DYNLOAD',
+    'WITH_PULSEAUDIO_DYNLOAD',
+    'WITH_SDL_AUDIO',
+    'WITH_INTERNATIONAL',
+    'WITH_FRIBIDI',
+    'WITH_HARFBUZZ',
+    'WITH_HARU',
+    'WITH_POTRACE',
+    'WITH_LIBMV',
+    'WITH_DRACO',
+    'WITH_MESHOPTIMIZER',
+    'WITH_OPENVDB_BLOSC',
+    'WITH_OPENVDB_3_ABI_COMPATIBLE',
+    'WITH_PYTHON_INSTALL_REQUESTS',
+    'WITH_DOC_MANPAGE',
+    'WITH_TBB_MALLOC_PROXY',
+    'WITH_CYCLES_STANDALONE',
+    'WITH_CYCLES_STANDALONE_GUI',
+    'WITH_CYCLES_HYDRA_RENDER_DELEGATE',
+    'WITH_PYTHON_MODULE',
     'WITH_CYCLES_DEVICE_CUDA',
     'WITH_CYCLES_DEVICE_OPTIX',
     'WITH_CYCLES_DEVICE_HIP',
@@ -192,17 +218,17 @@ disabled = (
     'WITH_CYCLES_DEVICE_ONEAPI',
 )
 errors = []
-for key, expected in required.items():
-    actual = cache.get(key)
-    if actual != expected:
-        errors.append(f'{key}: expected {expected}, got {actual or "missing"}')
-for key in disabled:
+for key in required_on:
+    if cache.get(key) != 'ON':
+        errors.append(f'{key}: expected ON, got {cache.get(key, "missing")}')
+for key in required_off:
     if cache.get(key) == 'ON':
         errors.append(f'{key}: must be OFF')
+if cache.get('CMAKE_BUILD_TYPE') != 'RELEASE':
+    errors.append(f'CMAKE_BUILD_TYPE: expected RELEASE, got {cache.get("CMAKE_BUILD_TYPE", "missing")}')
 if errors:
-    raise SystemExit('Feature matrix validation failed:\n' + '\n'.join(errors))
-print('FEATURE_MATRIX_VERIFIED CPU Cycles, Vulkan, OpenGL; GPU compute backends OFF',
-      'Embree=' + sys.argv[2], 'OpenImageDenoise=' + sys.argv[3], flush=True)
+    raise SystemExit('Slim feature matrix validation failed:\n' + '\n'.join(errors))
+print('SLIM_FEATURE_MATRIX_VERIFIED CPU Cycles + Vulkan/OpenGL; optional heavy modules disabled', flush=True)
 PYFEATURES
 
 python3 verify-compile-flags.py \
@@ -214,6 +240,7 @@ python3 verify-compile-flags.py \
 "$cmake_bin" --build "$build_dir" --parallel "$jobs" 2>&1 | tee -a logs/build.log
 "$cmake_bin" --install "$build_dir" 2>&1 | tee logs/install.log
 
+python3 slim-install.py "$install_dir" --no-i18n --report logs/slim-install.json
 python3 verify-compile-flags.py \
   "$build_dir/compile_commands.json" \
   --cpu-flag="$cpu_flag" \
@@ -223,7 +250,7 @@ python3 verify-compile-flags.py \
 "$install_dir/blender" --version | tee logs/version.log
 
 python3 - "$metadata_file" "$build_dir" "$cpu_flag" "$optimization_flag" \
-  "$jobs" "$heavy_jobs" "$link_jobs" "$with_embree" "$with_oidn" <<'PYINFO'
+  "$jobs" "$heavy_jobs" "$link_jobs" "$install_dir" <<'PYINFO'
 import json
 import os
 import platform
@@ -236,13 +263,42 @@ build_dir = Path(sys.argv[2])
 cpu_flag = sys.argv[3]
 optimization_flag = sys.argv[4]
 jobs, heavy_jobs, link_jobs = map(int, sys.argv[5:8])
-with_embree, with_oidn = sys.argv[8:10]
+install_dir = Path(sys.argv[8])
 
 cache = {}
 for line in (build_dir / 'CMakeCache.txt').read_text().splitlines():
     if '=' in line and not line.startswith(('#', '//')):
         raw_key, value = line.split('=', 1)
-        cache[raw_key.split(':', 1)[0]] = value
+        cache[raw_key.split(':', 1)[0]] = value.upper()
+
+FEATURE_OPTIONS = (
+    'WITH_CYCLES', 'WITH_CYCLES_OSL', 'WITH_CYCLES_EMBREE',
+    'WITH_CYCLES_PATH_GUIDING', 'WITH_OPENIMAGEDENOISE',
+    'WITH_VULKAN_BACKEND', 'WITH_OPENGL_BACKEND', 'WITH_PYTHON_INSTALL',
+    'WITH_USD', 'WITH_HYDRA', 'WITH_MATERIALX', 'WITH_ALEMBIC',
+    'WITH_OPENVDB', 'WITH_NANOVDB', 'WITH_FREESTYLE', 'WITH_MOD_FLUID',
+    'WITH_MOD_OCEANSIM', 'WITH_XR_OPENXR', 'WITH_CODEC_FFMPEG',
+    'WITH_CODEC_SNDFILE', 'WITH_AUDASPACE', 'WITH_OPENAL',
+    'WITH_PULSEAUDIO', 'WITH_JACK', 'WITH_PIPEWIRE',
+    'WITH_PIPEWIRE_DYNLOAD', 'WITH_JACK_DYNLOAD', 'WITH_PULSEAUDIO_DYNLOAD',
+    'WITH_SDL_AUDIO', 'WITH_INTERNATIONAL',
+    'WITH_LIBMV', 'WITH_DRACO', 'WITH_MESHOPTIMIZER',
+    'WITH_OPENVDB_BLOSC', 'WITH_OPENVDB_3_ABI_COMPATIBLE',
+    'WITH_PYTHON_INSTALL_REQUESTS', 'WITH_DOC_MANPAGE', 'WITH_TBB_MALLOC_PROXY',
+    'WITH_CYCLES_STANDALONE', 'WITH_CYCLES_STANDALONE_GUI',
+    'WITH_CYCLES_HYDRA_RENDER_DELEGATE', 'WITH_PYTHON_MODULE',
+    'WITH_CYCLES_DEVICE_CUDA', 'WITH_CYCLES_DEVICE_OPTIX',
+    'WITH_CYCLES_DEVICE_HIP', 'WITH_CYCLES_DEVICE_HIPRT',
+    'WITH_CYCLES_DEVICE_ONEAPI',
+)
+
+def cache_bool(name, default=False):
+    value = cache.get(name, '').upper()
+    if value in {'ON', 'TRUE', '1', 'YES'}:
+        return True
+    if value in {'OFF', 'FALSE', '0', 'NO'}:
+        return False
+    return default
 
 def compiler_version(path):
     if not path:
@@ -257,12 +313,18 @@ def package_version(name):
     except (OSError, subprocess.CalledProcessError):
         return None
 
+def mesa_files(patterns, directories):
+    found = []
+    for directory in map(Path, directories):
+        if not directory.is_dir():
+            continue
+        for pattern in patterns:
+            found.extend(str(path) for path in sorted(directory.glob(pattern)))
+    return sorted(set(found))
+
 info = json.loads(metadata_file.read_text())
 try:
-    if platform.freedesktop_os_release:
-        build_os = platform.freedesktop_os_release()
-    else:
-        build_os = None
+    build_os = platform.freedesktop_os_release()
 except (AttributeError, OSError):
     build_os = None
 try:
@@ -271,16 +333,9 @@ try:
 except (OSError, subprocess.CalledProcessError):
     recipe_commit = None
 
-def cache_bool(name, default=False):
-    value = cache.get(name, '').upper()
-    if not value:
-        return default
-    if value in {'ON', 'TRUE', '1', 'YES'}:
-        return True
-    if value in {'OFF', 'FALSE', '0', 'NO'}:
-        return False
-    return default
-
+features = {name: cache_bool(name) for name in FEATURE_OPTIONS}
+install_size = sum(path.stat().st_size for path in install_dir.rglob('*')
+                   if path.is_file() and not path.is_symlink())
 info.update(
     build_os=build_os,
     build_machine=platform.machine(),
@@ -296,20 +351,33 @@ info.update(
     linker='lld',
     build_jobs={'compile': jobs, 'heavy': heavy_jobs, 'link': link_jobs},
     cycles_native_only=cache_bool('WITH_CYCLES_NATIVE_ONLY'),
-    vulkan_backend=cache_bool('WITH_VULKAN_BACKEND'),
-    opengl_backend=cache_bool('WITH_OPENGL_BACKEND'),
+    features=features,
+    vulkan_backend=features['WITH_VULKAN_BACKEND'],
+    opengl_backend=features['WITH_OPENGL_BACKEND'],
     cycles_device_cpu=True,
-    embree=cache_bool('WITH_CYCLES_EMBREE', with_embree == 'ON'),
-    openimagedenoise=cache_bool('WITH_OPENIMAGEDENOISE', with_oidn == 'ON'),
+    embree=features['WITH_CYCLES_EMBREE'],
+    openimagedenoise=features['WITH_OPENIMAGEDENOISE'],
+    slim_profile=True,
+    install_size_bytes=install_size,
     mesa_vulkan_drivers=package_version('mesa-vulkan-drivers'),
     libgl1_mesa_dri=package_version('libgl1-mesa-dri'),
+    libdrm_freedreno=package_version('libdrm-freedreno1'),
     libvulkan1=package_version('libvulkan1'),
     mesa_ppa=os.environ.get('MESA_PPA_USED') or None,
     runner_image=os.environ.get('ImageOS') or os.environ.get('RUNNER_IMAGE') or None,
+    freedreno={
+        'dri': mesa_files(('*msm_dri.so', '*freedreno*dri.so'),
+                          ('/usr/lib/aarch64-linux-gnu/dri', '/usr/local/lib/aarch64-linux-gnu/dri',
+                           '/usr/lib/dri', '/usr/lib64/dri', '/vendor/lib64/dri',
+                           '/system/lib64/dri')),
+        'vulkan_icd': mesa_files(('*freedreno*icd*.json', '*turnip*icd*.json'),
+                                 ('/usr/share/vulkan/icd.d', '/usr/local/share/vulkan/icd.d',
+                                  '/etc/vulkan/icd.d', '/vendor/etc/vulkan/icd.d')),
+    },
     recipe_commit=recipe_commit,
 )
 metadata_file.write_text(json.dumps(info, indent=2) + '\n')
 print(f'Updated {metadata_file}', flush=True)
 PYINFO
 
-echo "Blender installed under: $install_dir"
+echo "Slim Blender installed under: $install_dir"

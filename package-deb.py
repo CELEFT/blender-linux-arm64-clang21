@@ -66,7 +66,7 @@ Maintainer: {maintainer}
 
 Package: {PACKAGE}
 Architecture: arm64
-Description: Unofficial Blender for Snapdragon 8s Gen 3 Linux ARM64
+Description: Slim Blender for Snapdragon 8s Gen 3 Linux ARM64
 ''')
     (control_dir/'control').write_text(f'Package: {PACKAGE}\nVersion: {package_version}\nArchitecture: arm64\nMaintainer: {maintainer}\nDescription: Unofficial Blender for Snapdragon 8s Gen 3 Linux ARM64\n')
     bin_dir = package_root/'usr/bin'
@@ -129,16 +129,28 @@ StartupWMClass=Blender
                     elfs.append(path)
     if not elfs:
         parser.error('The staged installation contains no ELF binaries.')
-    header = subprocess.check_output(['readelf', '-h', str(payload/'blender')], text=True)
+    header = subprocess.check_output(['readelf', '-h', str(payload/'blender')], text=True,
+                                     env=dict(os.environ, LC_ALL='C'))
     if not re.search(r'Machine:\s+AArch64', header):
         parser.error('The Blender executable is not ARM64.')
+    if os.environ.get('BLENDER_STRIP_BINARIES', '1') not in {'0', 'false', 'off'}:
+        strip = shutil.which(os.environ.get('STRIP', 'strip'))
+        if not strip:
+            parser.error('BLENDER_STRIP_BINARIES is enabled but strip is missing.')
+        before_strip = sum(path.stat().st_size for path in elfs)
+        for path in elfs:
+            subprocess.run([strip, '--strip-unneeded', str(path)], check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        after_strip = sum(path.stat().st_size for path in elfs)
+        print(f'Stripped {len(elfs)} ELF files: {before_strip} -> {after_strip} bytes', flush=True)
     private_dirs = sorted({str(path.parent) for path in elfs})
     command = ['dpkg-shlibdeps', '-O', f'-S{package_root}', f'-x{PACKAGE}']
     command += [f'-l{directory}' for directory in private_dirs]
     command += [str(path) for path in elfs]
     args.log.parent.mkdir(parents=True, exist_ok=True)
     with args.log.open('w') as log:
-        result = subprocess.run(command, cwd=work, text=True, stdout=subprocess.PIPE, stderr=log)
+        result = subprocess.run(command, cwd=work, text=True, stdout=subprocess.PIPE, stderr=log,
+                                env=dict(os.environ, LC_ALL='C'))
     if result.returncode:
         error = next((line for line in args.log.read_text().splitlines() if ': error:' in line),
                      'dpkg-shlibdeps failed without an error diagnostic.')
@@ -151,13 +163,8 @@ StartupWMClass=Blender
     runtime = ['python3', 'libgl1', 'libegl1', 'libgl1-mesa-dri', 'libegl-mesa0', 'libvulkan1',
                'libx11-6', 'libxi6', 'libxfixes3', 'libxrender1', 'libxrandr2',
                'libxxf86vm1', 'libxcursor1', 'libwayland-client0', 'libwayland-cursor0',
-               'libwayland-egl1', 'libxkbcommon0', 'libdecor-0-0', 'libdbus-1-3',
-               'libpulse0', 'libasound2t64', 'libjack-jackd2-0']
+               'libwayland-egl1', 'libxkbcommon0', 'libdecor-0-0', 'libdbus-1-3']
     dependencies = match[1]+', '+', '.join(runtime)
-    # Remove group/world-write bits inherited from the development installation.
-    for path in package_root.rglob('*'):
-        if not path.is_symlink():
-            path.chmod(stat.S_IMODE(path.stat().st_mode) & ~0o022)
     size = sum(path.stat().st_size for path in package_root.rglob('*') if path.is_file() and not path.is_symlink())
     (control_dir/'control').write_text(f'''Package: {PACKAGE}
 Version: {package_version}
@@ -168,12 +175,13 @@ Maintainer: {maintainer}
 Homepage: https://github.com/CELEFT/blender-linux-arm64-clang21
 Installed-Size: {(size+1023)//1024}
 Depends: {dependencies}
-Recommends: desktop-file-utils, hicolor-icon-theme, shared-mime-info, mesa-vulkan-drivers
+Recommends: desktop-file-utils, hicolor-icon-theme, shared-mime-info, mesa-vulkan-drivers, libdrm-freedreno1
 Provides: blender (= {args.version})
 Conflicts: blender
-Description: Unofficial Blender build for Snapdragon 8s Gen 3 Linux ARM64
- CPU Cycles rendering and automatic Vulkan/OpenGL/software graphics selection.
- Tuned for Cortex-X4 with SVE/SVE2 disabled. Built for {args.os_label}; see README.
+Description: Slim Blender build for Snapdragon 8s Gen 3 Linux ARM64
+ CPU Cycles rendering with automatic Vulkan/OpenGL/software graphics selection.
+ Includes Mesa Freedreno/Turnip auto-detection. Tuned for Cortex-X4 with SVE/SVE2
+ disabled and optional heavy modules removed. Built for {args.os_label}; see README.
 ''')
     with (control_dir/'md5sums').open('w') as hashes:
         for path in sorted((package_root/'usr').rglob('*')):
@@ -181,9 +189,19 @@ Description: Unofficial Blender build for Snapdragon 8s Gen 3 Linux ARM64
                 with path.open('rb') as file:
                     digest = hashlib.file_digest(file, 'md5').hexdigest()
                 hashes.write(f'{digest}  {path.relative_to(package_root)}\n')
+    # Normalize modes independently of the caller's umask. dpkg-deb requires
+    # DEBIAN/ to be 0755 and non-executable payload files to be readable.
+    for path in [package_root, *package_root.rglob('*')]:
+        if path.is_symlink():
+            continue
+        if path.is_dir():
+            path.chmod(0o755)
+        else:
+            executable = bool(stat.S_IMODE(path.stat().st_mode) & 0o111)
+            path.chmod(0o755 if executable else 0o644)
     args.output.mkdir(parents=True, exist_ok=True)
     output = args.output/f'{PACKAGE}_{package_version}_arm64.deb'
-    subprocess.run(['dpkg-deb', '--root-owner-group', '-Zxz', '-z3', '--build', str(package_root), str(output)], check=True)
+    subprocess.run(['dpkg-deb', '--root-owner-group', '-Zxz', '-z9', '--build', str(package_root), str(output)], check=True)
     print(f'Debian installer: {output}', flush=True)
 
 if __name__ == '__main__':

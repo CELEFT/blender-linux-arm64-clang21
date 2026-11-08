@@ -3,6 +3,7 @@
 """Fail the build if any C/C++/ASM translation unit loses the target CPU policy."""
 import argparse
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -63,7 +64,8 @@ def main():
     if args.binary:
         if not args.binary.is_file():
             raise SystemExit(f'Binary does not exist: {args.binary}')
-        header = subprocess.check_output(['readelf', '-h', str(args.binary)], text=True)
+        header = subprocess.check_output(['readelf', '-h', str(args.binary)], text=True,
+                                         env=dict(os.environ, LC_ALL='C'))
         if not re.search(r'Machine:\s+AArch64', header):
             raise SystemExit('Blender executable is not AArch64')
         binary_info = {'path': str(args.binary), 'machine': 'AArch64'}
