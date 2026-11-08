@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Slim Blender 5.2+ build for native Linux ARM64 on Snapdragon 8s Gen 3.
+# Blender 5.2+ build for native Linux ARM64 on Snapdragon 8s Gen 3.
 # The generated code targets Cortex-X4 with SVE/SVE2 forcibly disabled because
 # Android/proot commonly hides SVE from HWCAP even when the silicon has it.
 set -euo pipefail
@@ -133,10 +133,6 @@ cmake_args=(
   # Blender builds the CPU device whenever WITH_CYCLES is ON. Keep this marker
   # for compatibility with the project brief's requested CMake matrix.
   -DWITH_CYCLES_DEVICE_CPU=ON
-  -DWITH_CYCLES_OSL=OFF
-  -DWITH_CYCLES_EMBREE=OFF
-  -DWITH_CYCLES_PATH_GUIDING=OFF
-  -DWITH_OPENIMAGEDENOISE=OFF
   -DWITH_CYCLES_DEVICE_CUDA=OFF
   -DWITH_CYCLES_DEVICE_OPTIX=OFF
   -DWITH_CYCLES_DEVICE_HIP=OFF
@@ -147,7 +143,7 @@ cmake_args=(
   -DWITH_CYCLES_ONEAPI_BINARIES=OFF
 )
 
-echo "Configuring slim Blender $blender_version with Clang 21 / LLD / ThinLTO"
+echo "Configuring Blender $blender_version with Clang 21 / LLD / ThinLTO"
 echo "  CPU flags: $cpu_flag"
 echo "  Jobs: compile=$jobs heavy=$heavy_jobs link=$link_jobs"
 "$cmake_bin" "${cmake_args[@]}" 2>&1 | tee logs/configure.log
@@ -164,11 +160,9 @@ for line in Path(sys.argv[1]).read_text().splitlines():
 
 required_on = (
     'WITH_CYCLES',
+    'WITH_PYTHON_INSTALL',
     'WITH_VULKAN_BACKEND',
     'WITH_OPENGL_BACKEND',
-    'WITH_PYTHON_INSTALL',
-)
-required_off = (
     'WITH_CYCLES_OSL',
     'WITH_CYCLES_EMBREE',
     'WITH_CYCLES_PATH_GUIDING',
@@ -189,33 +183,28 @@ required_off = (
     'WITH_OPENAL',
     'WITH_PULSEAUDIO',
     'WITH_JACK',
-    'WITH_PIPEWIRE',
-    'WITH_PIPEWIRE_DYNLOAD',
-    'WITH_JACK_DYNLOAD',
-    'WITH_PULSEAUDIO_DYNLOAD',
-    'WITH_SDL_AUDIO',
     'WITH_INTERNATIONAL',
-    'WITH_FRIBIDI',
-    'WITH_HARFBUZZ',
-    'WITH_HARU',
-    'WITH_POTRACE',
     'WITH_LIBMV',
     'WITH_DRACO',
     'WITH_MESHOPTIMIZER',
-    'WITH_OPENVDB_BLOSC',
-    'WITH_OPENVDB_3_ABI_COMPATIBLE',
-    'WITH_PYTHON_INSTALL_REQUESTS',
-    'WITH_DOC_MANPAGE',
-    'WITH_TBB_MALLOC_PROXY',
-    'WITH_CYCLES_STANDALONE',
-    'WITH_CYCLES_STANDALONE_GUI',
-    'WITH_CYCLES_HYDRA_RENDER_DELEGATE',
-    'WITH_PYTHON_MODULE',
+    'WITH_POTRACE',
+    'WITH_HARU',
+)
+required_off = (
     'WITH_CYCLES_DEVICE_CUDA',
     'WITH_CYCLES_DEVICE_OPTIX',
     'WITH_CYCLES_DEVICE_HIP',
     'WITH_CYCLES_DEVICE_HIPRT',
     'WITH_CYCLES_DEVICE_ONEAPI',
+    'WITH_CYCLES_DEVICE_METAL',
+    'WITH_CYCLES_CUDA_BINARIES',
+    'WITH_CYCLES_HIP_BINARIES',
+    'WITH_CYCLES_ONEAPI_BINARIES',
+    'WITH_CYCLES_STANDALONE',
+    'WITH_CYCLES_STANDALONE_GUI',
+    'WITH_CYCLES_HYDRA_RENDER_DELEGATE',
+    'WITH_PYTHON_MODULE',
+    'WITH_TBB_MALLOC_PROXY',
 )
 errors = []
 for key in required_on:
@@ -227,8 +216,8 @@ for key in required_off:
 if cache.get('CMAKE_BUILD_TYPE') != 'RELEASE':
     errors.append(f'CMAKE_BUILD_TYPE: expected RELEASE, got {cache.get("CMAKE_BUILD_TYPE", "missing")}')
 if errors:
-    raise SystemExit('Slim feature matrix validation failed:\n' + '\n'.join(errors))
-print('SLIM_FEATURE_MATRIX_VERIFIED CPU Cycles + Vulkan/OpenGL; optional heavy modules disabled', flush=True)
+    raise SystemExit('Backend feature matrix validation failed:\n' + '\n'.join(errors))
+print('BACKEND_MATRIX_VERIFIED CPU Cycles/Vulkan/OpenGL; GPU compute backends disabled', flush=True)
 PYFEATURES
 
 python3 verify-compile-flags.py \
@@ -240,7 +229,7 @@ python3 verify-compile-flags.py \
 "$cmake_bin" --build "$build_dir" --parallel "$jobs" 2>&1 | tee -a logs/build.log
 "$cmake_bin" --install "$build_dir" 2>&1 | tee logs/install.log
 
-python3 slim-install.py "$install_dir" --no-i18n --report logs/slim-install.json
+python3 prune-install.py "$install_dir" --report logs/prune-install.json
 python3 verify-compile-flags.py \
   "$build_dir/compile_commands.json" \
   --cpu-flag="$cpu_flag" \
@@ -281,15 +270,17 @@ FEATURE_OPTIONS = (
     'WITH_CODEC_SNDFILE', 'WITH_AUDASPACE', 'WITH_OPENAL',
     'WITH_PULSEAUDIO', 'WITH_JACK', 'WITH_PIPEWIRE',
     'WITH_PIPEWIRE_DYNLOAD', 'WITH_JACK_DYNLOAD', 'WITH_PULSEAUDIO_DYNLOAD',
-    'WITH_SDL_AUDIO', 'WITH_INTERNATIONAL',
-    'WITH_LIBMV', 'WITH_DRACO', 'WITH_MESHOPTIMIZER',
-    'WITH_OPENVDB_BLOSC', 'WITH_OPENVDB_3_ABI_COMPATIBLE',
-    'WITH_PYTHON_INSTALL_REQUESTS', 'WITH_DOC_MANPAGE', 'WITH_TBB_MALLOC_PROXY',
-    'WITH_CYCLES_STANDALONE', 'WITH_CYCLES_STANDALONE_GUI',
-    'WITH_CYCLES_HYDRA_RENDER_DELEGATE', 'WITH_PYTHON_MODULE',
-    'WITH_CYCLES_DEVICE_CUDA', 'WITH_CYCLES_DEVICE_OPTIX',
-    'WITH_CYCLES_DEVICE_HIP', 'WITH_CYCLES_DEVICE_HIPRT',
-    'WITH_CYCLES_DEVICE_ONEAPI',
+    'WITH_SDL_AUDIO', 'WITH_INTERNATIONAL', 'WITH_LIBMV', 'WITH_DRACO',
+    'WITH_MESHOPTIMIZER', 'WITH_OPENVDB_BLOSC',
+    'WITH_OPENVDB_3_ABI_COMPATIBLE', 'WITH_PYTHON_INSTALL_REQUESTS',
+    'WITH_DOC_MANPAGE', 'WITH_TBB_MALLOC_PROXY', 'WITH_CYCLES_STANDALONE',
+    'WITH_CYCLES_STANDALONE_GUI', 'WITH_CYCLES_HYDRA_RENDER_DELEGATE',
+    'WITH_PYTHON_MODULE', 'WITH_CYCLES_DEVICE_CUDA',
+    'WITH_CYCLES_DEVICE_OPTIX', 'WITH_CYCLES_DEVICE_HIP',
+    'WITH_CYCLES_DEVICE_HIPRT', 'WITH_CYCLES_DEVICE_ONEAPI',
+    'WITH_CYCLES_DEVICE_METAL', 'WITH_CYCLES_CUDA_BINARIES',
+    'WITH_CYCLES_HIP_BINARIES', 'WITH_CYCLES_ONEAPI_BINARIES',
+    'WITH_POTRACE', 'WITH_HARU', 'WITH_FFTW3', 'WITH_OPENSUBDIV',
 )
 
 def cache_bool(name, default=False):
@@ -352,12 +343,16 @@ info.update(
     build_jobs={'compile': jobs, 'heavy': heavy_jobs, 'link': link_jobs},
     cycles_native_only=cache_bool('WITH_CYCLES_NATIVE_ONLY'),
     features=features,
+    feature_profile='cpu-vulkan-opengl',
+    execution_backends=['CPU'],
+    graphics_backends=['VULKAN', 'OPENGL'],
+    gpu_compute_backends_disabled=['CUDA', 'OPTIX', 'HIP', 'HIPRT', 'ONEAPI'],
     vulkan_backend=features['WITH_VULKAN_BACKEND'],
     opengl_backend=features['WITH_OPENGL_BACKEND'],
     cycles_device_cpu=True,
     embree=features['WITH_CYCLES_EMBREE'],
     openimagedenoise=features['WITH_OPENIMAGEDENOISE'],
-    slim_profile=True,
+    prune_install=True,
     install_size_bytes=install_size,
     mesa_vulkan_drivers=package_version('mesa-vulkan-drivers'),
     libgl1_mesa_dri=package_version('libgl1-mesa-dri'),
@@ -380,4 +375,4 @@ metadata_file.write_text(json.dumps(info, indent=2) + '\n')
 print(f'Updated {metadata_file}', flush=True)
 PYINFO
 
-echo "Slim Blender installed under: $install_dir"
+echo "Blender installed under: $install_dir"

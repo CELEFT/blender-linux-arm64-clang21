@@ -1,4 +1,4 @@
-"""Verify a slim Blender Linux ARM64 build in background mode."""
+"""Verify a Blender Linux ARM64 CPU/Vulkan/OpenGL build in background mode."""
 import ctypes
 import json
 import os
@@ -53,20 +53,27 @@ build_option_map = {
     'cycles': 'WITH_CYCLES',
     'cycles_osl': 'WITH_CYCLES_OSL',
     'codec_ffmpeg': 'WITH_CODEC_FFMPEG',
+    'codec_sndfile': 'WITH_CODEC_SNDFILE',
     'freestyle': 'WITH_FREESTYLE',
     'openvdb': 'WITH_OPENVDB',
     'alembic': 'WITH_ALEMBIC',
     'usd': 'WITH_USD',
     'fluid': 'WITH_MOD_FLUID',
     'xr_openxr': 'WITH_XR_OPENXR',
+    'audaspace': 'WITH_AUDASPACE',
+    'openal': 'WITH_OPENAL',
+    'pulseaudio': 'WITH_PULSEAUDIO',
+    'jack': 'WITH_JACK',
     'international': 'WITH_INTERNATIONAL',
     'libmv': 'WITH_LIBMV',
+    'potrace': 'WITH_POTRACE',
+    'haru': 'WITH_HARU',
 }
 for attribute, option in build_option_map.items():
     actual = getattr(bpy.app.build_options, attribute)
     required = expected(option)
     assert bool(actual) == required, (attribute, actual, required)
-print("SLIM_FEATURES_VERIFIED " + " ".join(
+print("FEATURE_MATRIX_VERIFIED " + " ".join(
     f"{name}={expected(option)}" for name, option in build_option_map.items()), flush=True)
 
 if build_info.get("vulkan_backend"):
@@ -99,5 +106,5 @@ import gpu
 print("GRAPHICS_VERIFIED", gpu.platform.renderer_get(), gpu.platform.version_get())
 print("BUILD_VERIFIED", bpy.app.version_string, platform.machine(),
       "NumPy", numpy.__version__, "CPU", build_info.get("cpu_flags", "unknown"),
-      "SVE", build_info.get("sve", "unknown"), "slim", build_info.get("slim_profile", False),
+      "SVE", build_info.get("sve", "unknown"), "profile", build_info.get("feature_profile", "unknown"),
       flush=True)

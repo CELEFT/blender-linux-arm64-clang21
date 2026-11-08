@@ -1,35 +1,40 @@
-# Slim Blender Linux ARM64 — Snapdragon 8s Gen 3
+# Blender Linux ARM64 for Snapdragon 8s Gen 3
 
-Unofficial **slim** Blender 5.2+ builds for ARM64 Linux containers (proot/chroot) on Snapdragon 8s Gen 3 devices.
+Unofficial Blender 5.2+ builds for ARM64 Linux containers (proot/chroot) on Snapdragon 8s Gen 3.
 
-The build targets Cortex-X4 with Clang 21 + LLD 21 + ThinLTO, renders with CPU Cycles, and exposes Vulkan and OpenGL viewport backends. SVE/SVE2 code generation is deliberately disabled because Android kernels and containers commonly hide SVE from `HWCAP`; executing an SVE instruction would otherwise terminate Blender with `SIGILL`.
+The device only exposes three usable rendering/graphics backends:
 
-The installed launcher also detects Mesa **Freedreno** (`msm` DRI) and **Turnip/Freedreno** Vulkan ICDs, so Adreno graphics can work in containers without manually exporting loader variables.
+- **CPU Cycles**
+- **Vulkan**
+- **OpenGL**
+
+This recipe therefore retains normal Blender release features and removes only unsupported GPU compute backends and non-application targets. CUDA, OptiX, HIP/HIPRT and oneAPI are disabled, and SVE/SVE2 code generation is forcibly disabled because Android/proot commonly hides SVE from `HWCAP`. The installed launcher additionally detects Mesa Freedreno (`msm` DRI), Turnip/Freedreno Vulkan ICDs and repairs runtime paths that commonly break inside proot.
 
 This project is not affiliated with or endorsed by the Blender Foundation. Chinese guide: [docs/SNAPDRAGON-8S-GEN3.zh-CN.md](docs/SNAPDRAGON-8S-GEN3.zh-CN.md).
 
-## Slim feature profile
+## What is kept and removed
 
-Enabled:
+Retained from Blender's normal release feature profile:
 
-- CPU Cycles with the default SVM shading path
-- Python and NumPy for Blender scripts
-- OpenGL and Vulkan viewport backends
-- Common image and mesh import/export
-- OpenSubdiv, TBB, OpenColorIO and core modelling tools
-- Adreno/Freedreno OpenGL and Turnip Vulkan auto-detection
-
-Disabled to keep the package small:
-
-- Cycles OSL, Embree, path guiding and OpenImageDenoise
-- USD, Hydra, MaterialX, Alembic, OpenVDB and NanoVDB
+- CPU Cycles, OSL, Embree, path guiding and OpenImageDenoise
+- USD/Hydra/MaterialX, Alembic, OpenVDB/NanoVDB
 - Freestyle, fluid/ocean simulation and OpenXR
 - FFmpeg, libsndfile, Audaspace, OpenAL, PulseAudio and JACK
-- Internationalization, Libmv, Draco/Meshoptimizer, Potrace/Haru
-- Development headers, static libraries, Python tests and bytecode caches
-- CUDA, OptiX, HIP/HIPRT, oneAPI and their binary kernels
+- Python/NumPy, common image and mesh IO, OpenSubdiv, TBB and OpenColorIO
+- Internationalization and normal Blender Python add-on support
+- Vulkan and OpenGL viewport backends
 
-Cycles rendering remains functional, but it is slower than a full build because Embree and OpenImageDenoise are intentionally absent.
+Removed because they are unusable or not applicable on this target:
+
+- CUDA, OptiX, HIP, HIPRT and oneAPI devices
+- CUDA/HIP/oneAPI binary kernel builders
+- Metal backend (Apple-only)
+- Cycles standalone, standalone GUI and standalone Hydra render delegate
+- Importable `bpy` Python module target
+- TBB malloc proxy (normal TBB allocator is used)
+- Tests, static libraries, development headers, CMake/pkg-config files and Python bytecode caches during packaging
+
+The `.deb` still contains the normal Blender application; "trimming" only removes unsupported backends, non-application build targets and build-only payload.
 
 ## Fixed build policy
 
@@ -40,10 +45,12 @@ Cycles rendering remains functional, but it is slower than a full build because 
 | Blender | Newest stable 5.2.x, or 5.3.x once a stable tag exists |
 | Compiler | Clang 21 + LLD 21 |
 | CPU flags | `-mcpu=cortex-x4+nosve+nosve2 -O3 -flto=thin` |
-| Graphics | CPU Cycles + Vulkan/OpenGL |
-| Dependency source | Blender official precompiled ARM64 libraries by default |
+| Execution backend | CPU Cycles |
+| Graphics backends | Vulkan + OpenGL |
+| GPU compute | Disabled |
+| Dependencies | Blender official precompiled ARM64 libraries |
 
-The official precompiled ARM64 dependency bundle is used to avoid most `make deps` failures on ARM64 while source/library commits are recorded in `BUILD-INFO.json`. `fetch-dependency-source.py` remains available for auditing or mirror download of dependency sources.
+The official precompiled ARM64 dependency bundle avoids most `make deps` failures on ARM64. Source and library commits are recorded in `BUILD-INFO.json`. `fetch-dependency-source.py` remains available for dependency-source auditing or mirror download.
 
 ## Install and run
 
@@ -62,11 +69,35 @@ blender --version
 blender --background scene.blend --render-frame 1
 ```
 
-The raw executable is `/usr/lib/blender-linux-arm64/blender`.
+The raw executable is `/usr/lib/blender-linux-arm64/blender`. Use the `blender` launcher when possible so proot and Freedreno compatibility is applied automatically.
+
+## Proot/chroot compatibility
+
+The launcher applies the following fixes outside information-only commands such as `--version`:
+
+1. Creates a writable `XDG_RUNTIME_DIR` fallback when the host runtime directory is missing or inaccessible.
+2. Removes a stale `WAYLAND_DISPLAY` when its socket is not visible, allowing X11 fallback.
+3. Sets a writable `MESA_SHADER_CACHE_DIR` under the Blender cache directory.
+4. Detects Mesa Freedreno/Turnip driver files and sets loader hints.
+5. Preserves explicit user choices for display and GPU driver environment variables.
+
+Inspect the reports:
+
+```sh
+cat "${XDG_CACHE_HOME:-$HOME/.cache}/blender-linux-arm64/proot.json"
+cat "${XDG_CACHE_HOME:-$HOME/.cache}/blender-linux-arm64/freedreno.json"
+```
+
+Disable either compatibility layer:
+
+```sh
+BLENDER_PROOT_COMPAT=0 blender
+BLENDER_FREEDRENO_COMPAT=0 blender
+```
 
 ## Mesa Freedreno / Turnip compatibility
 
-The packaged launcher applies these compatibility hints only when a graphics device is present and the user has not already chosen a driver:
+When a graphics device is present and the user has not chosen a driver explicitly:
 
 | Detected item | Applied environment |
 | --- | --- |
@@ -75,27 +106,18 @@ The packaged launcher applies these compatibility hints only when a graphics dev
 | `kgsl_dri.so` | `MESA_LOADER_DRIVER_OVERRIDE=kgsl` |
 | `freedreno_icd*.json` / `turnip_icd*.json` | `VK_DRIVER_FILES` and legacy `VK_ICD_FILENAMES` |
 
-It accepts DRM render nodes (`/dev/dri/renderD*`) and `/dev/kgsl-3d0`. Explicit user settings such as `MESA_LOADER_DRIVER_OVERRIDE=zink` or a custom `VK_DRIVER_FILES` are preserved. Disable auto detection with:
-
-```sh
-BLENDER_FREEDRENO_COMPAT=0 blender
-```
-
-Inspect what was selected:
-
-```sh
-cat "${XDG_CACHE_HOME:-$HOME/.cache}/blender-linux-arm64/freedreno.json"
-```
+The launcher recognizes `/dev/dri/renderD*` and `/dev/kgsl-3d0`. Existing `MESA_LOADER_DRIVER_OVERRIDE`, `GALLIUM_DRIVER`, `VK_DRIVER_FILES` or `VK_ICD_FILENAMES` values are preserved.
 
 Before blaming Blender, verify the container graphics stack:
 
 ```sh
 vulkaninfo --summary
 ls -l /dev/dri /dev/kgsl-3d0 2>/dev/null
-find /usr/lib/aarch64-linux-gnu/dri -maxdepth 1 -iname '*msm*' -o -iname '*freedreno*'
+find /usr/lib/aarch64-linux-gnu/dri -maxdepth 1 \
+  \( -iname '*msm*' -o -iname '*freedreno*' \)
 ```
 
-The `.deb` does not bundle Mesa/Turnip. Install the matching Mesa ARM64 package for the container, and ensure `/dev/dri/renderD128` or `/dev/kgsl-3d0` is visible through proot/chroot.
+The `.deb` does not bundle Mesa/Turnip. Install matching Mesa ARM64 packages in the container and ensure the render node is mounted.
 
 ## Graphics selection
 
@@ -107,8 +129,6 @@ The installed command defaults to **Auto**:
 
 Auto runs a small factory-settings render for each candidate and caches the result in `${XDG_CACHE_HOME:-~/.cache}/blender-linux-arm64/`. Batch CPU jobs skip the probe and use software OpenGL.
 
-Override for one run:
-
 ```sh
 BLENDER_GRAPHICS_MODE=hardware blender
 BLENDER_GRAPHICS_MODE=software blender
@@ -116,11 +136,7 @@ blender --gpu-backend vulkan
 blender --gpu-backend opengl
 ```
 
-If Vulkan viewport rendering fails:
-
-```sh
-export BLENDER_GRAPHICS_MODE=software
-```
+If the Vulkan viewport fails, use `BLENDER_GRAPHICS_MODE=software` or select OpenGL in Blender preferences.
 
 ## Build from source
 
@@ -135,6 +151,7 @@ sudo apt install -y \
   libxrandr-dev libxcursor-dev libxinerama-dev libegl-dev libegl1-mesa-dev \
   libwayland-dev libdecor-0-dev libdbus-1-dev libxkbcommon-dev \
   libsm-dev libice-dev libvulkan-dev vulkan-tools \
+  libpulse-dev libjack-jackd2-dev libasound2-dev \
   mesa-vulkan-drivers libgl1-mesa-dri libegl-mesa0 libopengl0 libdrm-freedreno1 \
   xvfb xauth
 ```
@@ -155,7 +172,7 @@ BLENDER_VERSION=5.2.3 ./prepare-source.sh
 
 The source downloader tries the Blender Git host first and GitHub as fallback. Override endpoints with `BLENDER_SOURCE_URL` / `BLENDER_LIBRARY_URL` when using a domestic or private mirror.
 
-Build and slim-install:
+Build:
 
 ```sh
 ./build-blender.sh
@@ -172,10 +189,10 @@ BLENDER_BUILD_DIR=/path/to/build BLENDER_INSTALL_DIR=/path/to/install ./build-bl
 
 - requires Clang 21 and LLD 21;
 - verifies the exact Cortex-X4 no-SVE compiler target;
-- validates the slim feature matrix from CMake cache;
-- checks every C/C++ translation unit through `compile_commands.json`;
-- removes test/development payload with `slim-install.py`;
-- records CPU flags, features, Freedreno files and package size in `logs/build-info.json`.
+- validates the backend matrix from CMake cache;
+- checks every C++/C translation unit through `compile_commands.json`;
+- removes build-only/test payload with `prune-install.py`;
+- records CPU flags, complete feature flags, Freedreno files and install size in `logs/build-info.json`.
 
 The default install directory is `~/.local/opt/blender-<version>-linux-arm64`; the default build directory is `build/<version>`.
 
@@ -198,15 +215,18 @@ xvfb-run -a -s '-screen 0 1280x720x24' \
 xvfb-run -a -s '-screen 0 1280x720x24' \
   "$install_dir/blender" --gpu-backend vulkan -noaudio \
   --factory-startup --python-exit-code 1 --python verify-vulkan.py
+
+python3 verify-proot.py
 ```
 
 Expected markers:
 
 - `BUILD_VERIFIED`
-- `SLIM_FEATURES_VERIFIED`
+- `FEATURE_MATRIX_VERIFIED`
+- `BACKEND_MATRIX_VERIFIED`
 - `CPU_FLAGS_VERIFIED`
+- `PROOT_FREEDRENO_COMPAT_VERIFIED`
 - `UI_VERIFIED`
-- `FREEDRENO_COMPAT_VERIFIED`
 - `VULKAN_VERIFIED` when a usable Vulkan ICD exists
 
 ## GitHub Actions
@@ -214,14 +234,14 @@ Expected markers:
 The manual workflow [`.github/workflows/manual-build.yml`](.github/workflows/manual-build.yml) runs on `ubuntu-26.04-arm` and:
 
 - installs Clang 21/LLD 21 and optionally a Mesa PPA;
-- installs Mesa DRI/Vulkan drivers plus `libdrm-freedreno1`;
+- installs Mesa DRI/Vulkan, `libdrm-freedreno1` and the normal audio development headers;
 - logs available `msm`/Freedreno DRI modules and Freedreno/Turnip ICDs;
-- runs the Freedreno environment-detection self-test;
+- runs the proot/Freedreno launcher self-test;
 - caches prepared source/LFS with `actions/cache/save@v4` and `if: always()`;
-- builds the slim profile with exact CPU/LTO flags;
-- verifies CPU Cycles, software OpenGL, GUI startup and the feature matrix;
+- builds with the exact CPU/LTO flags and validates that only CPU/Vulkan/OpenGL remain enabled;
+- verifies CPU Cycles, software OpenGL, GUI startup and the full feature matrix;
 - treats a Vulkan probe failure on a GPU-less hosted runner as a warning;
-- strips runtime binaries, prunes test/dev payload and compresses the `.deb` with xz level 9;
+- prunes build-only payload, strips ELF files and compresses the `.deb` with xz level 9;
 - uploads artifacts and publishes a release only when `publish_release` is enabled.
 
 The `build_jobs` input offers 2/4/6 parallel jobs. No automatic release is performed by default.
@@ -230,7 +250,7 @@ The `build_jobs` input offers 2/4/6 parallel jobs. No automatic release is perfo
 
 1. Record container OS, kernel, Mesa/Turnip version and `vulkaninfo --summary`.
 2. Confirm `/dev/dri/renderD128` or `/dev/kgsl-3d0` is visible.
-3. Check the launcher report at `~/.cache/blender-linux-arm64/freedreno.json`.
+3. Check `~/.cache/blender-linux-arm64/proot.json` and `freedreno.json`.
 4. Confirm SVE is hidden in the actual execution environment.
 5. Run a small Cycles CPU render and separate Vulkan/OpenGL viewport tests.
 6. Use cooling during sustained Cycles rendering; the SoC hits a thermal wall quickly.
@@ -242,7 +262,7 @@ The `build_jobs` input offers 2/4/6 parallel jobs. No automatic release is perfo
 - Blender's generated code excludes SVE/SVE2, but system Mesa/Turnip libraries must also be built compatibly.
 - Freedreno auto-detection requires a visible render node and Mesa `msm`/Freedreno modules.
 - Hosted `.deb` packages target Ubuntu 26.04 ARM64; other distributions require a native rebuild.
-- CPU Cycles is the only compute path. Optional heavy integrations listed above are absent by design.
+- CPU Cycles is the only compute path. CUDA/OptiX/HIP/HIPRT/oneAPI are not shipped.
 - Exact source and ARM64 library commits, enabled features and install size are recorded in `BUILD-INFO.json`.
 
 ## Source and licensing

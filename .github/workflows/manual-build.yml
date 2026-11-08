@@ -1,5 +1,5 @@
-name: Build Blender Linux ARM64 Slim
-run-name: Blender ${{ inputs.blender_version || 'latest stable' }} — Linux ARM64 slim
+name: Build Blender Linux ARM64 (CPU/Vulkan/OpenGL)
+run-name: Blender ${{ inputs.blender_version || 'latest stable' }} — Linux ARM64 CPU/Vulkan/OpenGL
 
 on:
   workflow_dispatch:
@@ -61,6 +61,8 @@ jobs:
       BLENDER_OPTIMIZATION_FLAG: -O3
       BLENDER_PACKAGE_REVISION: ${{ github.run_number }}
       MESA_PPA: ${{ inputs.mesa_ppa }}
+      BLENDER_PROOT_COMPAT: '1'
+      BLENDER_FREEDRENO_COMPAT: '1'
       LIBGL_ALWAYS_SOFTWARE: '1'
 
     steps:
@@ -102,6 +104,7 @@ jobs:
             libxrandr-dev libxcursor-dev libxinerama-dev libegl-dev libegl1-mesa-dev \
             libwayland-dev libdecor-0-dev libdbus-1-dev libxkbcommon-dev \
             libsm-dev libice-dev libvulkan-dev vulkan-tools \
+            libpulse-dev libjack-jackd2-dev libasound2-dev \
             mesa-vulkan-drivers libgl1-mesa-dri libegl-mesa0 libopengl0 libdrm-freedreno1 \
             xvfb xauth
           echo '--- toolchain ---'
@@ -128,8 +131,8 @@ jobs:
             done
           } | tee logs/mesa-freedreno.log
 
-      - name: Test Freedreno environment detection
-        run: python3 verify-freedreno.py
+      - name: Test proot and Freedreno launcher compatibility
+        run: python3 verify-proot.py
 
       - name: Restore prepared source cache
         id: source-cache
@@ -137,7 +140,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: source
-          key: blender-slim-src-v2-${{ inputs.blender_version || 'latest' }}-${{ inputs.dependency_ref || 'auto' }}-${{ hashFiles('prepare-source.py', 'generate-dependency-manifest.cmake') }}
+          key: blender-arm64-src-v3-${{ inputs.blender_version || 'latest' }}-${{ inputs.dependency_ref || 'auto' }}-${{ hashFiles('prepare-source.py', 'generate-dependency-manifest.cmake') }}
 
       - name: Recover cached Git worktrees
         run: |
@@ -167,7 +170,7 @@ jobs:
           path: source
           key: ${{ steps.source-cache.outputs.cache-primary-key }}
 
-      - name: Configure and build slim Blender
+      - name: Configure and build Blender
         run: ./build-blender.sh 2>&1 | tee logs/build-step.log
 
       - name: Verify CPU Cycles and software OpenGL
@@ -177,8 +180,10 @@ jobs:
             --gpu-backend opengl -noaudio --background --factory-startup \
             --python-exit-code 1 --python verify-build.py 2>&1 | tee logs/verify.log
           grep -q '^BUILD_VERIFIED ' logs/verify.log
+          grep -q '^FEATURE_MATRIX_VERIFIED ' logs/verify.log
+          grep -q '^BACKEND_MATRIX_VERIFIED ' logs/build-step.log
           python3 -c 'import json; assert json.load(open("logs/compile-flags.json"))["status"] == "PASS"'
-          python3 -c 'import json; assert json.load(open("logs/slim-install.json"))["bytes_saved"] >= 0'
+          python3 -c 'import json; assert json.load(open("logs/prune-install.json"))["bytes_saved"] >= 0'
 
       - name: Probe Mesa Freedreno/Turnip and Vulkan
         run: |
@@ -206,22 +211,23 @@ jobs:
             --python-exit-code 1 --python verify-ui.py 2>&1 | tee logs/verify-ui.log
           grep -q '^UI_VERIFIED ' logs/verify-ui.log
 
-      - name: Package slim Debian installer and source
+      - name: Package Debian installer and source
         run: |
           ./package-release.sh
           {
-            echo '### Slim Linux ARM64 build complete'
+            echo '### Linux ARM64 build complete'
             echo "Blender $BLENDER_VERSION, built on ${{ steps.source.outputs.os_id }} ARM64 with Clang 21 + ThinLTO."
             echo "CPU target: \`$BLENDER_CPU_FLAGS\` (SVE/SVE2 disabled)."
-            echo 'Disabled: OSL, Embree, OpenImageDenoise, USD/Hydra/MaterialX, Alembic, OpenVDB, Freestyle, fluid/ocean, FFmpeg/audio, Libmv, i18n and development/test payload.'
-            echo 'Mesa msm/Freedreno DRI and Freedreno/Turnip Vulkan ICD are auto-detected by the launcher.'
+            echo 'Backends: CPU Cycles, Vulkan, OpenGL. CUDA, OptiX, HIP/HIPRT, oneAPI and binary GPU kernels are disabled.'
+            echo 'Normal Blender release features are retained; tests, static libraries and development payload are pruned.'
+            echo 'Mesa msm/Freedreno DRI and Freedreno/Turnip Vulkan ICD are auto-detected; proot runtime paths are repaired.'
             deb=$(find release -maxdepth 1 -name '*.deb' -print -quit)
-            install_bytes=$(python3 -c 'import json; print(json.load(open("logs/slim-install.json"))["bytes_after"])')
-            echo "Slim install payload: $(numfmt --to=iec "$install_bytes")"
+            install_bytes=$(python3 -c 'import json; print(json.load(open("logs/prune-install.json"))["bytes_after"])')
+            echo "Install payload: $(numfmt --to=iec "$install_bytes")"
             echo "Debian package: $(numfmt --to=iec "$(stat -c %s "$deb")")"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Verify installed Debian package and Freedreno launcher
+      - name: Verify installed Debian package, proot and Freedreno launcher
         run: |
           package=$(find release -maxdepth 1 -name '*.deb' -print -quit)
           sudo apt-get install -y "$PWD/$package"
@@ -232,12 +238,13 @@ jobs:
             --python verify-ui.py 2>&1 | tee logs/verify-package-ui.log
           grep -q '^UI_VERIFIED ' logs/verify-package-ui.log
           cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/blender-linux-arm64"
+          cat "$cache_dir/proot.json" | tee logs/package-proot.json
           cat "$cache_dir/freedreno.json" | tee logs/package-freedreno.json
 
-      - name: Upload slim build artifacts
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: blender-${{ steps.source.outputs.version }}-${{ steps.source.outputs.os_id }}-arm64-slim
+          name: blender-${{ steps.source.outputs.version }}-${{ steps.source.outputs.os_id }}-arm64-cpu-vulkan-opengl
           path: release/
           compression-level: 0
           if-no-files-found: error
@@ -248,12 +255,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="v${BLENDER_VERSION}-linux-arm64-slim-r${BLENDER_PACKAGE_REVISION}-a${GITHUB_RUN_ATTEMPT}"
+          tag="v${BLENDER_VERSION}-linux-arm64-cpu-vulkan-opengl-r${BLENDER_PACKAGE_REVISION}-a${GITHUB_RUN_ATTEMPT}"
           notes="$RUNNER_TEMP/blender-release-notes.md"
           {
-            printf 'Slim Blender %s for Linux ARM64 on Snapdragon 8s Gen 3.\n\n' "$BLENDER_VERSION"
-            printf 'Clang 21 + LLD + ThinLTO, CPU Cycles, Vulkan/OpenGL, no SVE/SVE2. Optional heavy modules removed to reduce package size.\n\n'
-            printf 'Mesa Freedreno (msm DRI) and Turnip/Freedreno Vulkan ICD are detected automatically by the launcher. Validate `vulkaninfo --summary` on the device.\n\n'
+            printf 'Blender %s for Linux ARM64 on Snapdragon 8s Gen 3.\n\n' "$BLENDER_VERSION"
+            printf 'Clang 21 + LLD + ThinLTO with CPU Cycles, Vulkan and OpenGL. CUDA/OptiX/HIP/HIPRT/oneAPI backends and SVE/SVE2 are disabled.\n\n'
+            printf 'Mesa Freedreno (msm DRI) and Turnip/Freedreno Vulkan ICD are detected automatically. Proot runtime/display/cache paths are repaired by the launcher. Validate `vulkaninfo --summary` on the device.\n\n'
             printf 'Download the `.deb` and `SHA256SUMS`; verify the checksum before installing.\n\n'
             printf '[Build logs](%s/%s/actions/runs/%s).\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
           } > "$notes"
@@ -261,7 +268,7 @@ jobs:
           gh release create "$tag" \
             release/*.deb release/*-source.tar.xz release/BUILD-INFO.json release/SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "Blender $BLENDER_VERSION — Linux ARM64 slim" \
+            --title "Blender $BLENDER_VERSION — Linux ARM64 CPU/Vulkan/OpenGL" \
             --notes-file "$notes"
 
       - name: Upload diagnostic logs

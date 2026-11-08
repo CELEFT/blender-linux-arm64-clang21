@@ -1,80 +1,46 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Slim Blender feature matrix for Snapdragon 8s Gen 3 Linux containers.
-# The compiler/CPU policy is injected by build-blender.sh and verified against
-# compile_commands.json. This file defines what goes into the package.
+# Linux ARM64 application profile for Snapdragon 8s Gen 3 / proot containers.
+# The device exposes three usable execution/graphics backends:
+#   CPU Cycles, Vulkan, OpenGL.
+#
+# Keep Blender's normal release features. Only remove GPU compute backends and
+# standalone targets that cannot be used by this Linux ARM64 configuration.
 
-# CPU rendering and the two viewport backends needed on Adreno.
+include("${CMAKE_CURRENT_LIST_DIR}/../source/build_files/cmake/config/blender_release.cmake")
+
+# The three supported backends.
 set(WITH_CYCLES ON CACHE BOOL "" FORCE)
-# Blender builds the CPU device as part of WITH_CYCLES. Keep the marker because
-# the project brief requires it, even though Blender has no separate option.
+# Blender builds the CPU device as part of WITH_CYCLES. This marker is kept for
+# compatibility with the requested CMake matrix.
 set(WITH_CYCLES_DEVICE_CPU ON CACHE BOOL "" FORCE)
-set(WITH_OPENGL_BACKEND ON CACHE BOOL "" FORCE)
 set(WITH_VULKAN_BACKEND ON CACHE BOOL "" FORCE)
-set(WITH_PYTHON_INSTALL ON CACHE BOOL "" FORCE)
-set(WITH_PYTHON_INSTALL_NUMPY ON CACHE BOOL "" FORCE)
+set(WITH_OPENGL_BACKEND ON CACHE BOOL "" FORCE)
 
-# Never use runtime CPU detection (-march=native): proot and Android kernels
-# do not reliably expose the same HWCAP as the host. The exact CPU policy is
-# supplied on the command line and checked before every build.
+# Never emit runtime CPU detection (-march=native). The exact Cortex-X4 +
+# no-SVE policy is injected by build-blender.sh and validated per translation
+# unit, because proot does not expose reliable CPU/HWCAP information.
 set(WITH_CYCLES_NATIVE_ONLY OFF CACHE BOOL "" FORCE)
 set(WITH_CPU_CHECK OFF CACHE BOOL "" FORCE)
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON CACHE BOOL "" FORCE)
 
-# GPU compute backends are not usable in this container target.
+# Unsupported GPU compute backends: disable devices and their kernel builders.
 set(WITH_CYCLES_DEVICE_CUDA OFF CACHE BOOL "" FORCE)
 set(WITH_CYCLES_DEVICE_OPTIX OFF CACHE BOOL "" FORCE)
 set(WITH_CYCLES_DEVICE_HIP OFF CACHE BOOL "" FORCE)
 set(WITH_CYCLES_DEVICE_HIPRT OFF CACHE BOOL "" FORCE)
 set(WITH_CYCLES_DEVICE_ONEAPI OFF CACHE BOOL "" FORCE)
+set(WITH_CYCLES_DEVICE_METAL OFF CACHE BOOL "" FORCE)
 set(WITH_CYCLES_CUDA_BINARIES OFF CACHE BOOL "" FORCE)
 set(WITH_CYCLES_HIP_BINARIES OFF CACHE BOOL "" FORCE)
 set(WITH_CYCLES_ONEAPI_BINARIES OFF CACHE BOOL "" FORCE)
 
-# Slim package: remove large optional integrations that are not needed for a
-# CPU-Cycles viewport/render build. Cycles keeps the default SVM shading path.
-set(WITH_CYCLES_OSL OFF CACHE BOOL "" FORCE)
-set(WITH_CYCLES_EMBREE OFF CACHE BOOL "" FORCE)
-set(WITH_CYCLES_PATH_GUIDING OFF CACHE BOOL "" FORCE)
-set(WITH_OPENIMAGEDENOISE OFF CACHE BOOL "" FORCE)
-set(WITH_USD OFF CACHE BOOL "" FORCE)
-set(WITH_HYDRA OFF CACHE BOOL "" FORCE)
-set(WITH_MATERIALX OFF CACHE BOOL "" FORCE)
-set(WITH_ALEMBIC OFF CACHE BOOL "" FORCE)
-set(WITH_OPENVDB OFF CACHE BOOL "" FORCE)
-set(WITH_OPENVDB_BLOSC OFF CACHE BOOL "" FORCE)
-set(WITH_OPENVDB_3_ABI_COMPATIBLE OFF CACHE BOOL "" FORCE)
-set(WITH_NANOVDB OFF CACHE BOOL "" FORCE)
-set(WITH_FREESTYLE OFF CACHE BOOL "" FORCE)
-set(WITH_MOD_FLUID OFF CACHE BOOL "" FORCE)
-set(WITH_MOD_OCEANSIM OFF CACHE BOOL "" FORCE)
-set(WITH_XR_OPENXR OFF CACHE BOOL "" FORCE)
-set(WITH_CODEC_FFMPEG OFF CACHE BOOL "" FORCE)
-set(WITH_CODEC_SNDFILE OFF CACHE BOOL "" FORCE)
-set(WITH_AUDASPACE OFF CACHE BOOL "" FORCE)
-set(WITH_OPENAL OFF CACHE BOOL "" FORCE)
-set(WITH_JACK OFF CACHE BOOL "" FORCE)
-set(WITH_JACK_DYNLOAD OFF CACHE BOOL "" FORCE)
-set(WITH_PULSEAUDIO OFF CACHE BOOL "" FORCE)
-set(WITH_PULSEAUDIO_DYNLOAD OFF CACHE BOOL "" FORCE)
-set(WITH_PIPEWIRE OFF CACHE BOOL "" FORCE)
-set(WITH_PIPEWIRE_DYNLOAD OFF CACHE BOOL "" FORCE)
-set(WITH_SDL_AUDIO OFF CACHE BOOL "" FORCE)
-set(WITH_INTERNATIONAL OFF CACHE BOOL "" FORCE)
-set(WITH_FRIBIDI OFF CACHE BOOL "" FORCE)
-set(WITH_HARFBUZZ OFF CACHE BOOL "" FORCE)
-set(WITH_HARU OFF CACHE BOOL "" FORCE)
-set(WITH_POTRACE OFF CACHE BOOL "" FORCE)
-set(WITH_LIBMV OFF CACHE BOOL "" FORCE)
-set(WITH_LIBMV_SCHUR_SPECIALIZATIONS OFF CACHE BOOL "" FORCE)
-set(WITH_DRACO OFF CACHE BOOL "" FORCE)
-set(WITH_MESHOPTIMIZER OFF CACHE BOOL "" FORCE)
-set(WITH_DOC_MANPAGE OFF CACHE BOOL "" FORCE)
-set(WITH_PYTHON_INSTALL_REQUESTS OFF CACHE BOOL "" FORCE)
-set(WITH_TBB_MALLOC_PROXY OFF CACHE BOOL "" FORCE)
-
-# Other standalone targets are not part of the slim application package.
+# Not application backends: keep only the normal Blender application target.
 set(WITH_CYCLES_STANDALONE OFF CACHE BOOL "" FORCE)
 set(WITH_CYCLES_STANDALONE_GUI OFF CACHE BOOL "" FORCE)
 set(WITH_CYCLES_HYDRA_RENDER_DELEGATE OFF CACHE BOOL "" FORCE)
 set(WITH_PYTHON_MODULE OFF CACHE BOOL "" FORCE)
+
+# TBB malloc proxy is known to be problematic on ARM64; the regular allocator
+# is used instead. This does not remove any Blender feature.
+set(WITH_TBB_MALLOC_PROXY OFF CACHE BOOL "" FORCE)

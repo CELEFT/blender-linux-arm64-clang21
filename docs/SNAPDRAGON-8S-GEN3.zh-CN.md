@@ -1,8 +1,14 @@
-# Blender Linux ARM64（骁龙 8s Gen 3）精简构建与交接指南
+# Blender Linux ARM64（骁龙 8s Gen 3 / proot）构建与交接指南
 
-本文对应仓库中的实际脚本和 CI。目标是在 ARM64 Linux 容器（proot/chroot）中运行一个**精简但可用**的 Blender 5.2+/5.3：CPU Cycles 渲染、Vulkan/OpenGL 视口，并自动兼容 Mesa Freedreno（msm DRI）与 Turnip/Freedreno Vulkan。
+目标设备只使用三个后端：
 
-## 1. 固定策略
+- **CPU Cycles**
+- **Vulkan**
+- **OpenGL**
+
+因此本项目**保留 Blender 正常 release 功能**，只移除 Linux ARM64 设备用不上的 GPU 计算后端和非应用构建目标，并针对 proot 容器的设备、运行时目录、Wayland/X11、Mesa Freedreno/Turnip 做兼容适配。
+
+## 1. 目标与边界
 
 | 项目 | 决策 |
 | --- | --- |
@@ -11,38 +17,37 @@
 | 构建 runner | GitHub `ubuntu-26.04-arm` |
 | 编译器 | Clang 21 + LLD 21 |
 | 优化 | `-mcpu=cortex-x4+nosve+nosve2 -O3 -flto=thin` |
-| 渲染 | CPU Cycles（SVM 路径） |
-| 图形 | Vulkan/OpenGL + Mesa Freedreno 自动检测 |
+| 计算后端 | CPU Cycles |
+| 图形后端 | Vulkan、OpenGL |
+| 移除的后端 | CUDA、OptiX、HIP、HIPRT、oneAPI、Metal、对应 kernel builder |
 | 依赖 | Blender 官方 ARM64 预编译库 |
 
-> 必须禁用 SVE/SVE2。Cortex-X4 硬件支持 SVE2，但 Android 内核和 proot 经常不暴露对应 HWCAP；执行 SVE 指令会直接 `Illegal instruction`。`build-blender.sh` 会拒绝不含 `+nosve+nosve2` 的 CPU flag 覆盖，并扫描全部 C/C++ 编译命令。
+> 必须禁用 SVE/SVE2。Cortex-X4 硬件支持 SVE2，但 Android 内核和 proot 经常不暴露对应 HWCAP；执行 SVE 指令会直接 `Illegal instruction`。`build-blender.sh` 会拒绝不含 `+nosve+nosve2` 的 CPU flag 覆盖，并检查全部 C/C++ 编译命令。
 
-## 2. 精简特性矩阵
+## 2. 保留与移除的内容
 
-保留：
+保留 Blender release 的常规功能：
 
-- CPU Cycles 与默认 SVM shading；
-- Python + NumPy；
-- Vulkan/OpenGL 视口；
-- 常用图像/网格导入导出；
-- OpenSubdiv、TBB、OpenColorIO 和核心建模功能；
-- Adreno/Freedreno OpenGL 与 Turnip Vulkan 自动环境配置。
-
-关闭（减小包体）：
-
-- Cycles OSL、Embree、path guiding、OpenImageDenoise；
+- CPU Cycles、OSL、Embree、Path Guiding、OpenImageDenoise；
 - USD、Hydra、MaterialX、Alembic、OpenVDB、NanoVDB；
 - Freestyle、流体/海洋模拟、OpenXR；
 - FFmpeg、libsndfile、Audaspace、OpenAL、PulseAudio、JACK；
-- 国际化、Libmv、Draco/Meshoptimizer、Potrace/Haru；
-- CUDA、OptiX、HIP/HIPRT、oneAPI；
-- 开发头文件、静态库、Python tests、`__pycache__`、字节码和 locale。
+- Python/NumPy、常用图像和网格 IO、OpenSubdiv、TBB、OpenColorIO；
+- 国际化、正常 Python add-on；
+- Vulkan/OpenGL 视口。
 
-代价：CPU Cycles 不使用 Embree 加速，也没有 OIDN 降噪；完整功能版本需要自行恢复相应 CMake option。
+移除：
 
-## 3. 为什么编译参数必须硬编码
+- CUDA、OptiX、HIP、HIPRT、oneAPI 设备和 binary kernel builder；
+- Metal（Apple-only）；
+- Cycles standalone、standalone GUI、standalone Hydra render delegate；
+- 可导入的 `bpy` Python module target；
+- TBB malloc proxy（使用普通 TBB allocator）；
+- 打包阶段删除 tests、静态库、开发头文件、CMake/pkg-config、Python 字节码缓存。
 
-proot 中的 `/proc/cpuinfo`、HWCAP 和 `-march=native` 结果可能与真实 Android 运行环境不一致。CI 和本地构建都固定：
+这不是把 Blender 主体功能删掉，而是让构建只包含该设备可用的后端，并清除构建/测试残留。
+
+## 3. 编译策略
 
 ```text
 -mcpu=cortex-x4+nosve+nosve2
@@ -51,80 +56,124 @@ proot 中的 `/proc/cpuinfo`、HWCAP 和 `-march=native` 结果可能与真实 A
 -fuse-ld=lld
 ```
 
-构建脚本会在配置前用 Clang 编译一个探针程序；CMake configure 后校验 Slim feature matrix，再检查 `compile_commands.json` 中所有 C/C++ translation unit 都带有 CPU flag 和 ThinLTO，且没有 `native`、`+sve`、`+sve2` 等选项。
+`build-blender.sh` 会：
 
-## 4. Mesa Freedreno / Turnip 兼容
+1. 检查 Clang 21、LLD 21；
+2. 用探针编译验证 CPU target；
+3. 校验 CMake 后端矩阵：CPU Cycles、Vulkan、OpenGL 开，GPU compute 关；
+4. 检查 `compile_commands.json` 中所有 C/C++ translation unit 均使用 CPU flag 和 ThinLTO；
+5. 检查安装后的 Blender 是 AArch64；
+6. 运行 `prune-install.py` 删除测试/开发残留；
+7. 将 feature/backend 矩阵、Freedreno 文件、install size 写入 `BUILD-INFO.json`。
 
-安装包启动器在检测到图形设备且用户没有显式指定驱动时自动设置：
+## 4. Proot 兼容适配
 
-| 检测目标 | 环境变量 |
+`blender-launcher.py` 对非 `--version/--help` 启动执行以下修复：
+
+1. **XDG_RUNTIME_DIR**
+   - 如果宿主 runtime 目录在 proot 内不存在或不可写，创建
+     `${TMPDIR:-/tmp}/runtime-<uid>`。
+2. **Wayland socket**
+   - 如果 `WAYLAND_DISPLAY` 指向的 socket 不可见，移除该变量；
+   - 如果存在 X11 `DISPLAY`，设置 `XDG_SESSION_TYPE=x11`，避免 Blender 卡在不可用的 Wayland。
+3. **Mesa shader cache**
+   - 设置可写的 `MESA_SHADER_CACHE_DIR`，避免只读 HOME 或 proot 临时目录导致 shader cache 失败。
+4. **Freedreno/Turnip**
+   - 检测 `msm_dri.so`、`freedreno_dri.so`、`kgsl_dri.so`；
+   - 检测 `freedreno_icd*.json`、`turnip_icd*.json`；
+   - 仅在用户未显式指定驱动时设置 loader 环境。
+5. **用户覆盖**
+   - 已设置的 `MESA_LOADER_DRIVER_OVERRIDE`、`GALLIUM_DRIVER`、`VK_DRIVER_FILES`、`VK_ICD_FILENAMES` 不会被覆盖。
+
+报告文件：
+
+```sh
+cat "${XDG_CACHE_HOME:-$HOME/.cache}/blender-linux-arm64/proot.json"
+cat "${XDG_CACHE_HOME:-$HOME/.cache}/blender-linux-arm64/freedreno.json"
+```
+
+可分别关闭：
+
+```sh
+BLENDER_PROOT_COMPAT=0 blender
+BLENDER_FREEDRENO_COMPAT=0 blender
+```
+
+## 5. Mesa Freedreno / Turnip 对应关系
+
+| 检测目标 | 自动设置 |
 | --- | --- |
 | `msm_dri.so` | `MESA_LOADER_DRIVER_OVERRIDE=msm` |
 | `freedreno_dri.so` | `MESA_LOADER_DRIVER_OVERRIDE=freedreno` |
 | `kgsl_dri.so` | `MESA_LOADER_DRIVER_OVERRIDE=kgsl` |
 | `freedreno_icd*.json` / `turnip_icd*.json` | `VK_DRIVER_FILES` + `VK_ICD_FILENAMES` |
 
-设备路径支持 `/dev/dri/renderD*` 和 `/dev/kgsl-3d0`。用户已设置 `MESA_LOADER_DRIVER_OVERRIDE=zink`、`VK_DRIVER_FILES` 等值时不会被覆盖。
+图形设备路径支持：
 
-关闭自动配置：
-
-```sh
-BLENDER_FREEDRENO_COMPAT=0 blender
+```text
+/dev/dri/renderD*
+/dev/kgsl-3d0
 ```
 
-查看本次检测结果：
+如果 proot 没挂载 render node，硬件 Vulkan/OpenGL 本身不可用，Auto 会回退软件 OpenGL；这属于容器设备可见性问题，不是 Blender 包的 bug。
+
+## 6. 工作流结构
+
+`.github/workflows/manual-build.yml`：
+
+1. 设置 runner 路径、清理磁盘；
+2. 安装 Clang 21、LLD 21、Mesa DRI/Vulkan、`libdrm-freedreno1`、音频开发头文件和 Xvfb；
+3. 输出 Mesa/Freedreno DRI、Vulkan ICD 版本和文件；
+4. 运行 `verify-proot.py`，测试 proot 和 Freedreno 自动配置逻辑；
+5. 恢复 `source/` 缓存；
+6. `prepare-source.sh` 解析并锁定 Blender/ARM64 库 commit；
+7. `actions/cache/save@v4` + `if: always()` 保存源码/LFS；
+8. `build-blender.sh` 编译、验证后端矩阵、剪除 build-only payload；
+9. Xvfb 下验证 CPU Cycles、软件 OpenGL、GUI 和完整 feature matrix；
+10. 非阻断探测 Vulkan/Freedreno ICD；
+11. 打包 `.deb`，安装后验证 Auto/proot/Freedreno；
+12. 默认只上传 artifact；`publish_release=true` 才发布 Release。
+
+`build_jobs` 可选 2/4/6。ThinLTO 最终链接固定单并发，降低 proot OOM 风险。
+
+## 7. 包体处理
+
+`prune-install.py` 只删除非运行时内容：
+
+- Python tests；
+- `__pycache__`、`.pyc`、`config-*`；
+- 静态库 `.a`、libtool `.la`、`.prl`；
+- `include`、`lib/cmake`、`pkg-config`、手工页。
+
+`package-deb.py`：
+
+- 对所有 ELF 执行 `strip --strip-unneeded`；
+- 使用 xz level 9 压缩；
+- 保留 README/许可证/BUILD-INFO；
+- 运行时依赖加入正常音频库；
+- 推荐 Mesa Vulkan 和 `libdrm-freedreno1`。
+
+可用 `BLENDER_STRIP_BINARIES=0 ./package-release.sh` 跳过 strip 保留调试符号。
+
+## 8. 本地构建
+
+安装依赖（Ubuntu 26.04 ARM64）：
 
 ```sh
-cat "${XDG_CACHE_HOME:-$HOME/.cache}/blender-linux-arm64/freedreno.json"
+sudo apt update
+sudo apt install -y \
+  git git-lfs cmake ninja-build build-essential pkg-config dpkg-dev binutils \
+  clang-21 lld-21 llvm-21 libclang-rt-21-dev python3 python3-dev xz-utils \
+  libx11-dev libxxf86vm-dev libxi-dev libxfixes-dev libxrender-dev \
+  libxrandr-dev libxcursor-dev libxinerama-dev libegl-dev libegl1-mesa-dev \
+  libwayland-dev libdecor-0-dev libdbus-1-dev libxkbcommon-dev \
+  libsm-dev libice-dev libvulkan-dev vulkan-tools \
+  libpulse-dev libjack-jackd2-dev libasound2-dev \
+  mesa-vulkan-drivers libgl1-mesa-dri libegl-mesa0 libopengl0 libdrm-freedreno1 \
+  xvfb xauth
 ```
 
-真机检查：
-
-```sh
-vulkaninfo --summary
-ls -l /dev/dri /dev/kgsl-3d0 2>/dev/null
-find /usr/lib/aarch64-linux-gnu/dri -maxdepth 1 \
-  \( -iname '*msm*' -o -iname '*freedreno*' \)
-```
-
-`.deb` 不打包 Mesa/Turnip；容器里必须安装与内核匹配的 Mesa ARM64 驱动，并让 proot/chroot 看见 render node 或 kgsl 设备。
-
-## 5. 工作流结构
-
-`.github/workflows/manual-build.yml` 已重写为单 job、精简阶段：
-
-1. 释放 runner 磁盘空间，设置 build/install 路径。
-2. 安装 Clang 21、LLD 21、Mesa DRI/Vulkan、`libdrm-freedreno1` 和 Xvfb。
-3. 输出 Mesa/Freedreno DRI、Vulkan ICD 版本和文件列表。
-4. 运行 `verify-freedreno.py`，验证自动检测和显式覆盖逻辑。
-5. 恢复 `source/` 缓存。
-6. 执行 `prepare-source.sh` 解析并锁定 Blender/ARM64 库 commit。
-7. 使用 `actions/cache/save@v4` 保存源码和 LFS 缓存，条件为 `if: always()`。
-8. 执行 `build-blender.sh`，随后用 `slim-install.py` 删除 tests、静态库、开发文件和字节码。
-9. Xvfb 下验证 CPU Cycles、软件 OpenGL 和 slim feature matrix。
-10. 非阻断地探测 Vulkan/Freedreno ICD；宿主 runner 没有 Adreno 时不误判构建失败。
-11. 打包 `.deb`，安装后再次验证 Auto 图形启动器。
-12. 默认只上传 artifact；`publish_release=true` 时才创建 Release。
-
-缓存 key 包含 Blender 版本、dependency ref 和脚本哈希。缓存保存位于下载/解析之后、主编译之前，因此后续编译失败不会让源码重新下载。
-
-## 6. 包体精简
-
-两层处理：
-
-1. `slim-install.py`
-   - 删除 Python tests、tkinter/idlelib、config 目录、`__pycache__`、`.pyc`、`.a`、`.la`、`.prl`；
-   - 删除 `include`、CMake/pkg-config 文件和手工页；
-   - `--no-i18n` 删除 locale 数据（构建已关闭 internationalization）。
-2. `package-deb.py`
-   - 对所有 ELF 执行 `strip --strip-unneeded`；
-   - 使用 xz level 9 构建 `.deb`；
-   - 移除 OIDN GPU 插件（若存在）；
-   - 系统依赖列表移除已禁用的音频库。
-
-可用 `BLENDER_STRIP_BINARIES=0 ./package-release.sh` 跳过 strip 以保留调试符号。
-
-## 7. 本地构建命令
+构建：
 
 ```sh
 git clone https://github.com/CELEFT/blender-linux-arm64-clang21.git
@@ -139,44 +188,33 @@ BLENDER_BUILD_JOBS=2 ./build-blender.sh
 BLENDER_VERSION=5.2.3 ./prepare-source.sh
 ```
 
-依赖 Git 源支持镜像回退：
+Git 源镜像：
 
 ```sh
 BLENDER_SOURCE_URL=https://mirror.example/blender.git
 BLENDER_LIBRARY_URL=https://mirror.example/lib-linux_arm64.git
 ```
 
-依赖源码下载仍可用：
+依赖源码下载：
 
 ```sh
 python3 fetch-dependency-source.py --all --output dependency-sources
 ```
 
-下载器使用普通 User-Agent，支持重试、上游 URI 和 `BLENDER_DEPENDENCY_MIRROR_PREFIXES`。
-
-## 8. 验证标记
-
-CPU Cycles/软件 OpenGL：
+## 9. 验证
 
 ```sh
 project_dir="$PWD"
 source ./build-settings.sh
+
 xvfb-run -a -s '-screen 0 1280x720x24' \
   env LIBGL_ALWAYS_SOFTWARE=1 "$install_dir/blender" \
   --gpu-backend opengl -noaudio --background --factory-startup \
   --python-exit-code 1 --python verify-build.py
-```
 
-Freedreno 检测逻辑：
-
-```sh
-python3 verify-freedreno.py
-```
-
-Vulkan：
-
-```sh
+python3 verify-proot.py
 vulkaninfo --summary
+
 xvfb-run -a -s '-screen 0 1280x720x24' \
   "$install_dir/blender" --gpu-backend vulkan -noaudio \
   --factory-startup --python-exit-code 1 --python verify-vulkan.py
@@ -184,39 +222,30 @@ xvfb-run -a -s '-screen 0 1280x720x24' \
 
 应看到：
 
-- `SLIM_FEATURE_MATRIX_VERIFIED`
+- `BACKEND_MATRIX_VERIFIED`
+- `FEATURE_MATRIX_VERIFIED`
 - `BUILD_VERIFIED`
-- `SLIM_FEATURES_VERIFIED`
 - `CPU_FLAGS_VERIFIED`
-- `FREEDRENO_COMPAT_VERIFIED`
+- `PROOT_FREEDRENO_COMPAT_VERIFIED`
 - `UI_VERIFIED`
 - 有可用 Vulkan ICD 时出现 `VULKAN_VERIFIED`
 
-## 9. 真机避坑
+## 10. 真机检查与避坑
 
-- 不要用 `-march=native` 或 `-mcpu=native` 重编；proot 看到的信息不可信。
+- 不要用 `-march=native` / `-mcpu=native` 重编；proot 的 CPU 信息不可信。
+- 确认 `/dev/dri/renderD128` 或 `/dev/kgsl-3d0` 在容器内可见。
+- 检查 `proot.json` 和 `freedreno.json`。
+- 若 Wayland 不可用，X11 `DISPLAY` 是否可用；launcher 会删除失效 Wayland socket。
 - 若 Vulkan 崩溃，先用 `--gpu-backend opengl` 或 `BLENDER_GRAPHICS_MODE=software` 判断问题层。
-- 若 Freedreno 未自动生效，检查 render node 是否可见、Mesa DRI 是否有 `msm_dri.so`、Vulkan ICD 是否有 `freedreno_icd*.json`。
-- 关闭自动检测并手动指定驱动，用于排除 launcher 影响：
+- 长时 Cycles 渲染必须散热；否则会撞温度墙。
+- OOM 时使用 `BLENDER_BUILD_JOBS=2`、配置 swap、关闭后台应用。
 
-```sh
-BLENDER_FREEDRENO_COMPAT=0 \
-MESA_LOADER_DRIVER_OVERRIDE=msm \
-VK_DRIVER_FILES=/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json \
-blender --gpu-backend vulkan
-```
+## 11. 产物与验收
 
-- 长时 Cycles 渲染必须散热，否则会撞温度墙。
-- OOM 时 `BLENDER_BUILD_JOBS=2`、配置 swap、关闭后台应用。最终 ThinLTO 链接固定单并发。
-
-## 10. 产物与验收
-
-可交接产物：
-
-- `blender-linux-arm64_*.deb`：精简安装包；
-- `blender-<version>-source.tar.xz`：Blender 源码、脚本、配置、文档；
-- `BUILD-INFO.json`：source/dependency commit、CPU flags、feature matrix、Mesa/Freedreno 文件、install size；
+- `blender-linux-arm64_*.deb`；
+- `blender-<version>-source.tar.xz`；
+- `BUILD-INFO.json`：source/dependency commit、CPU flags、backend/feature matrix、Mesa/Freedreno、install size；
 - `SHA256SUMS`；
-- CI logs：`mesa-freedreno.log`、`vulkaninfo.log`、`verify.log`、`slim-install.json`、`compile-flags.json`。
+- CI logs：`mesa-freedreno.log`、`vulkaninfo.log`、`verify.log`、`prune-install.json`、`compile-flags.json`、`package-proot.json`、`package-freedreno.json`。
 
-CI 通过只代表构建和软件图形链路通过。真机必须单独验证 Vulkan/OpenGL、Freedreno 检测和 Cycles CPU 渲染。
+CI 通过不等于真机通过。必须单独验证 Vulkan、OpenGL、Freedreno 检测和 Cycles CPU 渲染。

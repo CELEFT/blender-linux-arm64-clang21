@@ -51,8 +51,7 @@ def main():
     python_lib = install_dir / 'python/lib'
     if python_lib.is_dir():
         for python_dir in sorted(python_lib.glob('python*')):
-            for name in ('test', 'tests', 'idlelib', 'tkinter', 'turtledemo',
-                         'pydoc_data'):
+            for name in ('test', 'tests'):
                 remove(python_dir / name, removed)
             for config_dir in python_dir.glob('config-*'):
                 remove(config_dir, removed)
@@ -94,7 +93,7 @@ def main():
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, indent=2) + '\n')
-    print(f'SLIM_INSTALL bytes {before} -> {after}, saved {before - after}, entries {len(removed)}',
+    print(f'PRUNE_INSTALL bytes {before} -> {after}, saved {before - after}, entries {len(removed)}',
           flush=True)
 
 

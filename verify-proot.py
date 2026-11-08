@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Unit-test the Mesa Freedreno/Turnip environment detection in the launcher."""
+"""Unit-test proot and Mesa Freedreno/Turnip environment adaptation."""
 import importlib.util
 import json
 import tempfile
@@ -64,4 +64,32 @@ with tempfile.TemporaryDirectory(prefix='blender-freedreno-test.') as temporary:
     assert command[-3:] == ['scene.blend', '--render-frame', '1'], command
     print('BACKGROUND_SOFTWARE_POLICY_VERIFIED no hardware probe in CPU batch mode', flush=True)
 
-print('FREEDRENO_COMPAT_VERIFIED', flush=True)
+    # Proot adaptation: create a usable runtime dir, discard a stale Wayland
+    # socket, keep X11 available, and set a writable Mesa shader cache.
+    proot_env = {'HOME': str(root), 'WAYLAND_DISPLAY': 'wayland-9', 'DISPLAY': ':99'}
+    report = launcher.prepare_proot_environment(proot_env, cache_dir)
+    assert Path(proot_env['XDG_RUNTIME_DIR']).is_dir(), proot_env
+    assert proot_env['XDG_RUNTIME_DIR'] == report['runtime_dir'], report
+    assert Path(proot_env['MESA_SHADER_CACHE_DIR']).is_dir(), proot_env
+    assert 'WAYLAND_DISPLAY' not in proot_env, proot_env
+    assert proot_env['XDG_SESSION_TYPE'] == 'x11', proot_env
+    assert json.loads((cache_dir / 'proot.json').read_text())['display'] == ':99'
+    print('PROOT_ENVIRONMENT_VERIFIED stale Wayland removed; runtime/cache created', flush=True)
+
+    explicit_runtime = root / 'runtime'
+    explicit_runtime.mkdir()
+    wayland_socket = explicit_runtime / 'wayland-0'
+    wayland_socket.touch()
+    preserved = {'XDG_RUNTIME_DIR': str(explicit_runtime), 'WAYLAND_DISPLAY': 'wayland-0'}
+    launcher.prepare_proot_environment(preserved, cache_dir)
+    assert preserved['XDG_RUNTIME_DIR'] == str(explicit_runtime), preserved
+    assert preserved['WAYLAND_DISPLAY'] == 'wayland-0', preserved
+    print('PROOT_DISPLAY_PRESERVE_VERIFIED usable Wayland socket kept', flush=True)
+
+    disabled = {'BLENDER_PROOT_COMPAT': '0'}
+    launcher.prepare_proot_environment(disabled, cache_dir)
+    assert 'XDG_RUNTIME_DIR' not in disabled, disabled
+    assert 'MESA_SHADER_CACHE_DIR' not in disabled, disabled
+    print('PROOT_DISABLE_VERIFIED BLENDER_PROOT_COMPAT=0 respected', flush=True)
+
+print('PROOT_FREEDRENO_COMPAT_VERIFIED', flush=True)

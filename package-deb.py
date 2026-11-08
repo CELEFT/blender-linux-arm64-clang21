@@ -66,9 +66,9 @@ Maintainer: {maintainer}
 
 Package: {PACKAGE}
 Architecture: arm64
-Description: Slim Blender for Snapdragon 8s Gen 3 Linux ARM64
+Description: Blender for Snapdragon 8s Gen 3 Linux ARM64 (CPU/Vulkan/OpenGL)
 ''')
-    (control_dir/'control').write_text(f'Package: {PACKAGE}\nVersion: {package_version}\nArchitecture: arm64\nMaintainer: {maintainer}\nDescription: Unofficial Blender for Snapdragon 8s Gen 3 Linux ARM64\n')
+    (control_dir/'control').write_text(f'Package: {PACKAGE}\nVersion: {package_version}\nArchitecture: arm64\nMaintainer: {maintainer}\nDescription: Blender for Snapdragon 8s Gen 3 Linux ARM64 (CPU/Vulkan/OpenGL)\n')
     bin_dir = package_root/'usr/bin'
     bin_dir.mkdir(parents=True)
     launcher = payload/'blender-launcher.py'
@@ -160,10 +160,22 @@ StartupWMClass=Blender
         raise SystemExit('dpkg-shlibdeps returned no system library dependencies.')
     # Blender also loads graphics/windowing/audio libraries dynamically, so they
     # cannot all be discovered from ELF NEEDED entries alone.
+    def installed_package(*names):
+        for name in names:
+            try:
+                subprocess.check_output(['dpkg-query', '-W', '-f=${Status}', name],
+                                        text=True, stderr=subprocess.DEVNULL)
+                return name
+            except (OSError, subprocess.CalledProcessError):
+                pass
+        return names[0]
+
+    asound_package = installed_package('libasound2t64', 'libasound2')
     runtime = ['python3', 'libgl1', 'libegl1', 'libgl1-mesa-dri', 'libegl-mesa0', 'libvulkan1',
                'libx11-6', 'libxi6', 'libxfixes3', 'libxrender1', 'libxrandr2',
                'libxxf86vm1', 'libxcursor1', 'libwayland-client0', 'libwayland-cursor0',
-               'libwayland-egl1', 'libxkbcommon0', 'libdecor-0-0', 'libdbus-1-3']
+               'libwayland-egl1', 'libxkbcommon0', 'libdecor-0-0', 'libdbus-1-3',
+               'libpulse0', asound_package, 'libjack-jackd2-0']
     dependencies = match[1]+', '+', '.join(runtime)
     size = sum(path.stat().st_size for path in package_root.rglob('*') if path.is_file() and not path.is_symlink())
     (control_dir/'control').write_text(f'''Package: {PACKAGE}
@@ -178,10 +190,10 @@ Depends: {dependencies}
 Recommends: desktop-file-utils, hicolor-icon-theme, shared-mime-info, mesa-vulkan-drivers, libdrm-freedreno1
 Provides: blender (= {args.version})
 Conflicts: blender
-Description: Slim Blender build for Snapdragon 8s Gen 3 Linux ARM64
- CPU Cycles rendering with automatic Vulkan/OpenGL/software graphics selection.
- Includes Mesa Freedreno/Turnip auto-detection. Tuned for Cortex-X4 with SVE/SVE2
- disabled and optional heavy modules removed. Built for {args.os_label}; see README.
+Description: Blender build for Snapdragon 8s Gen 3 Linux ARM64
+ CPU Cycles, Vulkan and OpenGL backends with automatic Freedreno/Turnip detection.
+ Normal Blender release features are retained; unsupported GPU compute backends,
+ SVE/SVE2, tests and development payload are removed. Built for {args.os_label}.
 ''')
     with (control_dir/'md5sums').open('w') as hashes:
         for path in sorted((package_root/'usr').rglob('*')):

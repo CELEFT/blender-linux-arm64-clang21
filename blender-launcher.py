@@ -30,6 +30,7 @@ FREEDRENO_ENV_KEYS = (
     'DISPLAY', 'WAYLAND_DISPLAY', 'XDG_SESSION_TYPE', 'LD_LIBRARY_PATH',
     'DRI_PRIME', 'MESA_LOADER_DRIVER_OVERRIDE', 'GALLIUM_DRIVER',
     'MESA_VK_DEVICE_SELECT', 'VK_ICD_FILENAMES', 'VK_DRIVER_FILES',
+    'XDG_RUNTIME_DIR', 'MESA_SHADER_CACHE_DIR',
     'VK_LOADER_DRIVERS_SELECT', 'LIBGL_DRIVERS_PATH', 'FD_MESA_DEBUG',
     'TU_DEBUG', 'MESA_GL_VERSION_OVERRIDE', 'MESA_GLSL_VERSION_OVERRIDE',
 )
@@ -63,6 +64,66 @@ def find_first(patterns, directories):
             if matches:
                 return matches[0]
     return None
+
+
+def prepare_proot_environment(environment, cache_dir):
+    """Fix runtime/display paths that commonly disappear inside proot/chroot."""
+    if not truthy(environment.get('BLENDER_PROOT_COMPAT', '1')):
+        return {'enabled': False, 'reason': 'disabled by BLENDER_PROOT_COMPAT'}
+    changes = {}
+
+    runtime_dir = environment.get('XDG_RUNTIME_DIR')
+    runtime_path = Path(runtime_dir) if runtime_dir else None
+    runtime_usable = bool(runtime_path and runtime_path.is_dir() and
+                          os.access(runtime_path, os.W_OK | os.X_OK))
+    if not runtime_usable:
+        fallback = Path(tempfile.gettempdir()) / f"runtime-{os.getuid()}"
+        try:
+            fallback.mkdir(parents=True, exist_ok=True, mode=0o700)
+            environment['XDG_RUNTIME_DIR'] = str(fallback)
+            runtime_path = fallback
+            changes['XDG_RUNTIME_DIR'] = str(fallback)
+        except OSError:
+            runtime_path = None
+
+    # A stale Wayland display from the host often survives into proot while its
+    # socket does not. Remove it so Blender can use X11 instead of failing.
+    wayland_display = environment.get('WAYLAND_DISPLAY')
+    wayland_socket = None
+    if wayland_display:
+        wayland_socket = Path(wayland_display)
+        if not wayland_socket.is_absolute() and runtime_path is not None:
+            wayland_socket = runtime_path / wayland_display
+        if not wayland_socket.exists():
+            environment.pop('WAYLAND_DISPLAY', None)
+            changes['WAYLAND_DISPLAY'] = 'removed (socket missing)'
+            wayland_socket = None
+            if environment.get('DISPLAY'):
+                environment.setdefault('XDG_SESSION_TYPE', 'x11')
+                changes['XDG_SESSION_TYPE'] = environment['XDG_SESSION_TYPE']
+
+    shader_cache = cache_dir / 'mesa-shader-cache'
+    if not environment.get('MESA_SHADER_CACHE_DIR'):
+        try:
+            shader_cache.mkdir(parents=True, exist_ok=True, mode=0o700)
+            environment['MESA_SHADER_CACHE_DIR'] = str(shader_cache)
+            changes['MESA_SHADER_CACHE_DIR'] = str(shader_cache)
+        except OSError:
+            pass
+
+    report = {
+        'enabled': True,
+        'runtime_dir': str(runtime_path) if runtime_path else None,
+        'wayland_socket': str(wayland_socket) if wayland_socket else None,
+        'display': environment.get('DISPLAY'),
+        'changes': changes,
+    }
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        (cache_dir / 'proot.json').write_text(json.dumps(report, indent=2) + '\n')
+    except OSError:
+        pass
+    return report
 
 
 def configure_freedreno(environment, cache_dir, device_paths=None):
@@ -209,6 +270,7 @@ def launch(program, arguments, environment, cache_dir):
     software_requested = mode == 'software' or inherited_software or (mode == 'auto' and background)
 
     if not information_only:
+        prepare_proot_environment(environment, cache_dir)
         if software_requested:
             environment['LIBGL_ALWAYS_SOFTWARE'] = '1'
         else:
