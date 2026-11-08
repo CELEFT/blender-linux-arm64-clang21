@@ -52,6 +52,8 @@ The `.deb` still contains the normal Blender application; "trimming" only remove
 
 The official precompiled ARM64 dependency bundle avoids most `make deps` failures on ARM64. Source and library commits are recorded in `BUILD-INFO.json`. `fetch-dependency-source.py` remains available for dependency-source auditing or mirror download.
 
+Blender's default ARM64 `-march=armv8.2-a+dotprod+fp16+lse` SIMD flag is disabled (`WITH_COMPILER_SIMD=OFF`). Otherwise it is appended after `-mcpu` and overrides the Cortex-X4 target/scheduling policy. The build verifier rejects any conflicting `-march=` or `-mtune=` option in a translation unit.
+
 ## Install and run
 
 Download the `.deb` and `SHA256SUMS` from one release into one directory:

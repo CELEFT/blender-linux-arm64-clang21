@@ -60,11 +60,12 @@
 
 1. 检查 Clang 21、LLD 21；
 2. 用探针编译验证 CPU target；
-3. 校验 CMake 后端矩阵：CPU Cycles、Vulkan、OpenGL 开，GPU compute 关；
-4. 检查 `compile_commands.json` 中所有 C/C++ translation unit 均使用 CPU flag 和 ThinLTO；
-5. 检查安装后的 Blender 是 AArch64；
-6. 运行 `prune-install.py` 删除测试/开发残留；
-7. 将 feature/backend 矩阵、Freedreno 文件、install size 写入 `BUILD-INFO.json`。
+3. 关闭 Blender 默认 ARM `-march=armv8.2-a+dotprod+fp16+lse`（`WITH_COMPILER_SIMD=OFF`），否则它会追加在 `-mcpu` 之后并覆盖 Cortex-X4 目标；
+4. 校验 CMake 后端矩阵：CPU Cycles、Vulkan、OpenGL 开，GPU compute 关；
+5. 检查 `compile_commands.json` 中所有 C/C++ translation unit 均使用 CPU flag 和 ThinLTO，并拒绝冲突的 `-march=`/`-mtune=`；
+6. 检查安装后的 Blender 是 AArch64；
+7. 运行 `prune-install.py` 删除测试/开发残留；
+8. 将 feature/backend 矩阵、Freedreno 文件、install size 写入 `BUILD-INFO.json`。
 
 ## 4. Proot 兼容适配
 

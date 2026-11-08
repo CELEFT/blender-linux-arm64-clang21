@@ -49,8 +49,12 @@ def main():
         if args.lto_flag and source.suffix in LTO_SUFFIXES and args.lto_flag not in argv:
             missing.append(f'{source}: missing {args.lto_flag}')
         for token in argv:
-            if token.startswith(('-', '+')) and (token in FORBIDDEN or SVE_ENABLE_RE.search(token)):
+            if not token.startswith(('-', '+')):
+                continue
+            if token in FORBIDDEN or SVE_ENABLE_RE.search(token):
                 forbidden.append(f'{source}: {token}')
+            elif token.startswith(('-march=', '-mtune=')):
+                forbidden.append(f'{source}: conflicting target option {token}')
     if not checked:
         raise SystemExit('compile_commands.json contains no C/C++/ASM translation units')
     if missing:

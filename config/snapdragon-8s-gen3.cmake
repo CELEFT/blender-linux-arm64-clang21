@@ -22,6 +22,10 @@ set(WITH_OPENGL_BACKEND ON CACHE BOOL "" FORCE)
 # unit, because proot does not expose reliable CPU/HWCAP information.
 set(WITH_CYCLES_NATIVE_ONLY OFF CACHE BOOL "" FORCE)
 set(WITH_CPU_CHECK OFF CACHE BOOL "" FORCE)
+# Blender's default ARM SIMD flag (-march=armv8.2-a+dotprod+fp16+lse) would
+# override the requested -mcpu and remove Cortex-X4 scheduling. Disable it so
+# the global -mcpu=cortex-x4+nosve+nosve2 policy remains effective.
+set(WITH_COMPILER_SIMD OFF CACHE BOOL "" FORCE)
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON CACHE BOOL "" FORCE)
 
 # Unsupported GPU compute backends: disable devices and their kernel builders.

@@ -126,6 +126,7 @@ cmake_args=(
   -DNINJA_MAX_NUM_PARALLEL_LINK_JOBS="$link_jobs"
   -DWITH_INSTALL_PORTABLE=ON
   -DWITH_CPU_CHECK=OFF
+  -DWITH_COMPILER_SIMD=OFF
   -DWITH_CYCLES_NATIVE_ONLY=OFF
   -DWITH_VULKAN_BACKEND=ON
   -DWITH_OPENGL_BACKEND=ON
@@ -205,6 +206,7 @@ required_off = (
     'WITH_CYCLES_HYDRA_RENDER_DELEGATE',
     'WITH_PYTHON_MODULE',
     'WITH_TBB_MALLOC_PROXY',
+    'WITH_COMPILER_SIMD',
 )
 errors = []
 for key in required_on:
@@ -258,7 +260,7 @@ cache = {}
 for line in (build_dir / 'CMakeCache.txt').read_text().splitlines():
     if '=' in line and not line.startswith(('#', '//')):
         raw_key, value = line.split('=', 1)
-        cache[raw_key.split(':', 1)[0]] = value.upper()
+        cache[raw_key.split(':', 1)[0]] = value
 
 FEATURE_OPTIONS = (
     'WITH_CYCLES', 'WITH_CYCLES_OSL', 'WITH_CYCLES_EMBREE',
@@ -292,9 +294,12 @@ def cache_bool(name, default=False):
     return default
 
 def compiler_version(path):
-    if not path:
+    if not path or not Path(path).is_file():
         return None
-    return subprocess.check_output([path, '--version'], text=True).splitlines()[0]
+    try:
+        return subprocess.check_output([path, '--version'], text=True).splitlines()[0]
+    except (OSError, subprocess.CalledProcessError):
+        return None
 
 def package_version(name):
     try:
@@ -342,6 +347,7 @@ info.update(
     linker='lld',
     build_jobs={'compile': jobs, 'heavy': heavy_jobs, 'link': link_jobs},
     cycles_native_only=cache_bool('WITH_CYCLES_NATIVE_ONLY'),
+    compiler_default_simd=cache_bool('WITH_COMPILER_SIMD', True),
     features=features,
     feature_profile='cpu-vulkan-opengl',
     execution_backends=['CPU'],
