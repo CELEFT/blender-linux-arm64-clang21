@@ -2,6 +2,8 @@
 
 Unofficial Blender 5.2+ builds for ARM64 Linux containers (proot/chroot) on Snapdragon 8s Gen 3.
 
+Releases are distributed as portable `bin/lib/share` `.tar.xz` archives, not `.deb` packages. The tree includes `bin/blender`, `lib/blender/`, a `.desktop` file and a desktop-entry installer.
+
 The device only exposes three usable rendering/graphics backends:
 
 - **CPU Cycles**
@@ -34,7 +36,7 @@ Removed because they are unusable or not applicable on this target:
 - TBB malloc proxy (normal TBB allocator is used)
 - Tests, static libraries, development headers, CMake/pkg-config files and Python bytecode caches during packaging
 
-The `.deb` still contains the normal Blender application; "trimming" only removes unsupported backends, non-application build targets and build-only payload.
+The portable archive still contains the normal Blender application; trimming only removes unsupported backends, non-application build targets and build-only payload.
 
 ## Fixed build policy
 
@@ -56,22 +58,56 @@ Blender's default ARM64 `-march=armv8.2-a+dotprod+fp16+lse` SIMD flag is disable
 
 ## Install and run
 
-Download the `.deb` and `SHA256SUMS` from one release into one directory:
+Download the portable `.tar.xz` and `SHA256SUMS` from one release:
 
 ```sh
 sha256sum --ignore-missing -c SHA256SUMS
-sudo apt install ./blender-linux-arm64_*.deb
-blender
+tar -xJf blender-*-linux-arm64-*-snapdragon8s.tar.xz
+cd blender-*-linux-arm64-*-snapdragon8s
+./bin/blender --version
+./bin/blender --background scene.blend --render-frame 1
 ```
 
-The package installs Blender under `/usr/lib/blender-linux-arm64`, adds `/usr/bin/blender`, and provides a desktop entry. It conflicts with a distribution `blender` package because both provide `/usr/bin/blender`.
+No system installation is required. The archive uses this portable layout:
+
+```text
+blender-<version>-linux-arm64-<os>-snapdragon8s/
+├── bin/blender                    # launcher
+├── lib/blender/
+│   ├── blender                    # raw executable
+│   ├── blender-launcher.py
+│   ├── BUILD-INFO.json
+│   ├── <version>/                 # datafiles, python, scripts
+│   ├── lib/                       # bundled shared libraries
+│   └── license/
+├── share/applications/blender-linux-arm64.desktop
+├── share/icons/hicolor/scalable/apps/blender-linux-arm64.svg
+├── share/doc/blender-linux-arm64/
+├── install-desktop.sh
+├── README.md
+├── RELEASING.md
+└── LICENSE
+```
+
+The raw executable is `lib/blender/blender`. Prefer `bin/blender`, because the launcher applies proot and Freedreno compatibility automatically.
+
+### Desktop entry
+
+The archive includes:
+
+- `share/applications/blender-linux-arm64.desktop`
+- `share/icons/hicolor/scalable/apps/blender-linux-arm64.svg`
+- `install-desktop.sh`
+
+For a user-specific desktop entry with the correct absolute path:
 
 ```sh
-blender --version
-blender --background scene.blend --render-frame 1
+./install-desktop.sh
 ```
 
-The raw executable is `/usr/lib/blender-linux-arm64/blender`. Use the `blender` launcher when possible so proot and Freedreno compatibility is applied automatically.
+This writes `~/.local/share/applications/blender-linux-arm64.desktop` and copies the icon under `~/.local/share/icons`. Re-run the script if you move the extracted directory.
+
+The bundled `share/applications/blender-linux-arm64.desktop` uses `Exec=blender`; it is suitable for manual installation when `bin/` is in `PATH`.
 
 ## Proot/chroot compatibility
 
@@ -119,7 +155,7 @@ find /usr/lib/aarch64-linux-gnu/dri -maxdepth 1 \
   \( -iname '*msm*' -o -iname '*freedreno*' \)
 ```
 
-The `.deb` does not bundle Mesa/Turnip. Install matching Mesa ARM64 packages in the container and ensure the render node is mounted.
+The portable archive does not bundle Mesa/Turnip. Install matching Mesa ARM64 packages in the container and ensure the render node is mounted.
 
 ## Graphics selection
 
@@ -147,7 +183,7 @@ Build natively on ARM64; cross-compilation is not supported by this recipe.
 ```sh
 sudo apt update
 sudo apt install -y \
-  git git-lfs cmake ninja-build build-essential pkg-config dpkg-dev binutils \
+  git git-lfs cmake ninja-build build-essential pkg-config binutils desktop-file-utils \
   clang-21 lld-21 llvm-21 libclang-rt-21-dev python3 python3-dev xz-utils \
   libx11-dev libxxf86vm-dev libxi-dev libxfixes-dev libxrender-dev \
   libxrandr-dev libxcursor-dev libxinerama-dev libegl-dev libegl1-mesa-dev \
@@ -243,7 +279,7 @@ The manual workflow [`.github/workflows/manual-build.yml`](.github/workflows/man
 - builds with the exact CPU/LTO flags and validates that only CPU/Vulkan/OpenGL remain enabled;
 - verifies CPU Cycles, software OpenGL, GUI startup and the full feature matrix;
 - treats a Vulkan probe failure on a GPU-less hosted runner as a warning;
-- prunes build-only payload, strips ELF files and compresses the `.deb` with xz level 9;
+- prunes build-only payload, strips ELF files and creates a portable `bin/lib/share` `.tar.xz` with xz level 9;
 - uploads artifacts and publishes a release only when `publish_release` is enabled.
 
 The `build_jobs` input offers 2/4/6 parallel jobs. No automatic release is performed by default.
@@ -263,7 +299,7 @@ The `build_jobs` input offers 2/4/6 parallel jobs. No automatic release is perfo
 - Generated code is tuned for Cortex-X4 and is not intended for older ARM64 CPUs.
 - Blender's generated code excludes SVE/SVE2, but system Mesa/Turnip libraries must also be built compatibly.
 - Freedreno auto-detection requires a visible render node and Mesa `msm`/Freedreno modules.
-- Hosted `.deb` packages target Ubuntu 26.04 ARM64; other distributions require a native rebuild.
+- The hosted portable archive is built on Ubuntu 26.04 ARM64; other distributions require a native rebuild.
 - CPU Cycles is the only compute path. CUDA/OptiX/HIP/HIPRT/oneAPI are not shipped.
 - Exact source and ARM64 library commits, enabled features and install size are recorded in `BUILD-INFO.json`.
 

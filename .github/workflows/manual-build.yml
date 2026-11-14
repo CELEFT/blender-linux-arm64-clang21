@@ -98,7 +98,7 @@ jobs:
             fi
           fi
           sudo apt-get install -y \
-            git git-lfs cmake ninja-build build-essential pkg-config dpkg-dev binutils \
+            git git-lfs cmake ninja-build build-essential pkg-config binutils desktop-file-utils \
             clang-21 lld-21 llvm-21 libclang-rt-21-dev python3 python3-dev xz-utils \
             libx11-dev libxxf86vm-dev libxi-dev libxfixes-dev libxrender-dev \
             libxrandr-dev libxcursor-dev libxinerama-dev libegl-dev libegl1-mesa-dev \
@@ -157,7 +157,7 @@ jobs:
           mkdir -p logs
           ./prepare-source.sh 2>&1 | tee logs/prepare.log
           version=$(python3 -c 'import json; print(json.load(open("logs/build-info.json"))["version"])')
-          os_id=$(. /etc/os-release; printf '%s%s' "$ID" "$VERSION_ID")
+          os_id=$(. /etc/os-release; printf '%s%s' "$ID" "${VERSION_ID:-${VERSION_CODENAME:-unknown}}")
           echo "BLENDER_VERSION=$version" >> "$GITHUB_ENV"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "os_id=$os_id" >> "$GITHUB_OUTPUT"
@@ -211,40 +211,70 @@ jobs:
             --python-exit-code 1 --python verify-ui.py 2>&1 | tee logs/verify-ui.log
           grep -q '^UI_VERIFIED ' logs/verify-ui.log
 
-      - name: Package Debian installer and source
+      - name: Package portable archive and source
         run: |
           ./package-release.sh
           {
-            echo '### Linux ARM64 build complete'
+            echo '### Linux ARM64 portable build complete'
             echo "Blender $BLENDER_VERSION, built on ${{ steps.source.outputs.os_id }} ARM64 with Clang 21 + ThinLTO."
             echo "CPU target: \`$BLENDER_CPU_FLAGS\` (SVE/SVE2 disabled)."
             echo 'Backends: CPU Cycles, Vulkan, OpenGL. CUDA, OptiX, HIP/HIPRT, oneAPI and binary GPU kernels are disabled.'
-            echo 'Normal Blender release features are retained; tests, static libraries and development payload are pruned.'
-            echo 'Mesa msm/Freedreno DRI and Freedreno/Turnip Vulkan ICD are auto-detected; proot runtime paths are repaired.'
-            deb=$(find release -maxdepth 1 -name '*.deb' -print -quit)
+            echo 'Layout: bin/ + lib/blender/ + share/; .desktop and install-desktop.sh are included.'
+            archive=$(find release -maxdepth 1 -name '*.tar.xz' ! -name '*-source.tar.xz' -print -quit)
+            source_archive=$(find release -maxdepth 1 -name '*-source.tar.xz' -print -quit)
             install_bytes=$(python3 -c 'import json; print(json.load(open("logs/prune-install.json"))["bytes_after"])')
             echo "Install payload: $(numfmt --to=iec "$install_bytes")"
-            echo "Debian package: $(numfmt --to=iec "$(stat -c %s "$deb")")"
+            echo "Portable archive: $(numfmt --to=iec "$(stat -c %s "$archive")")"
+            echo "Source archive: $(numfmt --to=iec "$(stat -c %s "$source_archive")")"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Verify installed Debian package, proot and Freedreno launcher
+      - name: Verify extracted portable archive, desktop, proot and Freedreno
         run: |
-          package=$(find release -maxdepth 1 -name '*.deb' -print -quit)
-          sudo apt-get install -y "$PWD/$package"
-          /usr/bin/blender --version
+          cd release
+          sha256sum -c SHA256SUMS
+          archive=$(find . -maxdepth 1 -name '*.tar.xz' ! -name '*-source.tar.xz' -print -quit)
+          [[ -n "$archive" ]]
+          cd ..
+          tmp=$(mktemp -d)
+          tar -xJf "release/$archive" -C "$tmp"
+          root=$(find "$tmp" -mindepth 1 -maxdepth 1 -type d -print -quit)
+          test -x "$root/bin/blender"
+          test -x "$root/install-desktop.sh"
+          test -f "$root/share/applications/blender-linux-arm64.desktop"
+          desktop-file-validate "$root/share/applications/blender-linux-arm64.desktop"
+          "$root/bin/blender" --version | tee logs/portable-version.log
+
+          export HOME="$tmp/home"
+          export XDG_CACHE_HOME="$tmp/cache"
+          mkdir -p "$HOME" "$XDG_CACHE_HOME"
+
+          xvfb-run -a -s '-screen 0 1280x720x24' \
+            env LIBGL_ALWAYS_SOFTWARE=1 "$root/bin/blender" \
+            --gpu-backend opengl -noaudio --background --factory-startup \
+            --python-exit-code 1 --python verify-build.py 2>&1 | tee logs/portable-verify.log
+          grep -q '^BUILD_VERIFIED ' logs/portable-verify.log
+          grep -q '^FEATURE_MATRIX_VERIFIED ' logs/portable-verify.log
+
           timeout 120s xvfb-run -a -s '-screen 0 1280x720x24' \
-            env -u LIBGL_ALWAYS_SOFTWARE /usr/bin/blender \
+            env -u LIBGL_ALWAYS_SOFTWARE "$root/bin/blender" \
             -noaudio --factory-startup --python-exit-code 1 \
-            --python verify-ui.py 2>&1 | tee logs/verify-package-ui.log
-          grep -q '^UI_VERIFIED ' logs/verify-package-ui.log
-          cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/blender-linux-arm64"
-          cat "$cache_dir/proot.json" | tee logs/package-proot.json
-          cat "$cache_dir/freedreno.json" | tee logs/package-freedreno.json
+            --python verify-ui.py 2>&1 | tee logs/portable-verify-ui.log
+          grep -q '^UI_VERIFIED ' logs/portable-verify-ui.log
+
+          "$root/install-desktop.sh" | tee logs/desktop-install.log
+          desktop_file="$HOME/.local/share/applications/blender-linux-arm64.desktop"
+          test -f "$desktop_file"
+          desktop-file-validate "$desktop_file"
+          grep -F "$root/bin/blender" "$desktop_file"
+
+          cache_dir="$XDG_CACHE_HOME/blender-linux-arm64"
+          cat "$cache_dir/proot.json" | tee logs/portable-proot.json
+          cat "$cache_dir/freedreno.json" | tee logs/portable-freedreno.json
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: blender-${{ steps.source.outputs.version }}-${{ steps.source.outputs.os_id }}-arm64-cpu-vulkan-opengl
+          name: blender-${{ steps.source.outputs.version }}-${{ steps.source.outputs.os_id }}-arm64-portable
           path: release/
           compression-level: 0
           if-no-files-found: error
@@ -261,12 +291,12 @@ jobs:
             printf 'Blender %s for Linux ARM64 on Snapdragon 8s Gen 3.\n\n' "$BLENDER_VERSION"
             printf 'Clang 21 + LLD + ThinLTO with CPU Cycles, Vulkan and OpenGL. CUDA/OptiX/HIP/HIPRT/oneAPI backends and SVE/SVE2 are disabled.\n\n'
             printf 'Mesa Freedreno (msm DRI) and Turnip/Freedreno Vulkan ICD are detected automatically. Proot runtime/display/cache paths are repaired by the launcher. Validate `vulkaninfo --summary` on the device.\n\n'
-            printf 'Download the `.deb` and `SHA256SUMS`; verify the checksum before installing.\n\n'
+            printf 'Download the portable `.tar.xz` and `SHA256SUMS`; extract it and run `bin/blender`, or run `install-desktop.sh` to add the desktop entry.\n\n'
             printf '[Build logs](%s/%s/actions/runs/%s).\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
           } > "$notes"
           (cd release && sha256sum -c SHA256SUMS)
           gh release create "$tag" \
-            release/*.deb release/*-source.tar.xz release/BUILD-INFO.json release/SHA256SUMS \
+            release/*.tar.xz release/BUILD-INFO.json release/SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "Blender $BLENDER_VERSION — Linux ARM64 CPU/Vulkan/OpenGL" \
             --notes-file "$notes"

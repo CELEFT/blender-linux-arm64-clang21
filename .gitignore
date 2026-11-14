@@ -21,7 +21,6 @@ __pycache__/
 *.tar.gz
 *.tar.zst
 *.zip
-*.deb
 
 # Local editor, environment, and credential files
 /.agents/

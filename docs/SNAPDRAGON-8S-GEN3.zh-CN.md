@@ -132,12 +132,33 @@ BLENDER_FREEDRENO_COMPAT=0 blender
 8. `build-blender.sh` 编译、验证后端矩阵、剪除 build-only payload；
 9. Xvfb 下验证 CPU Cycles、软件 OpenGL、GUI 和完整 feature matrix；
 10. 非阻断探测 Vulkan/Freedreno ICD；
-11. 打包 `.deb`，安装后验证 Auto/proot/Freedreno；
+11. 打包 `bin/lib/share` 便携 `.tar.xz`，解压后验证 `bin/blender`、`.desktop`、proot/Freedreno；
 12. 默认只上传 artifact；`publish_release=true` 才发布 Release。
 
 `build_jobs` 可选 2/4/6。ThinLTO 最终链接固定单并发，降低 proot OOM 风险。
 
-## 7. 包体处理
+## 7. 便携 tar.xz 与桌面文件
+
+不再生成 `.deb`。`package-portable.py` 会生成：
+
+```text
+blender-<version>-linux-arm64-<os>-snapdragon8s/
+├── bin/blender
+├── lib/blender/
+│   ├── blender
+│   ├── blender-launcher.py
+│   ├── BUILD-INFO.json
+│   ├── <version>/{datafiles,python,scripts}
+│   ├── lib/*.so
+│   └── license/
+├── share/applications/blender-linux-arm64.desktop
+├── share/icons/hicolor/scalable/apps/blender-linux-arm64.svg
+├── share/doc/blender-linux-arm64/
+├── install-desktop.sh
+├── README.md
+├── RELEASING.md
+└── LICENSE
+```
 
 `prune-install.py` 只删除非运行时内容：
 
@@ -146,15 +167,35 @@ BLENDER_FREEDRENO_COMPAT=0 blender
 - 静态库 `.a`、libtool `.la`、`.prl`；
 - `include`、`lib/cmake`、`pkg-config`、手工页。
 
-`package-deb.py`：
+`package-portable.py`：
 
+- 把安装树放入 `lib/blender/`，生成 `bin/blender` launcher；
+- 添加 `.desktop`、图标和 `install-desktop.sh`；
 - 对所有 ELF 执行 `strip --strip-unneeded`；
 - 使用 xz level 9 压缩；
-- 保留 README/许可证/BUILD-INFO；
-- 运行时依赖加入正常音频库；
-- 推荐 Mesa Vulkan 和 `libdrm-freedreno1`。
+- 写入便携包布局和大小信息到 `BUILD-INFO.json`。
 
-可用 `BLENDER_STRIP_BINARIES=0 ./package-release.sh` 跳过 strip 保留调试符号。
+解压运行：
+
+```sh
+tar -xJf blender-*-linux-arm64-*-snapdragon8s.tar.xz
+cd blender-*-linux-arm64-*-snapdragon8s
+./bin/blender --version
+./bin/blender --background scene.blend --render-frame 1
+```
+
+桌面菜单注册：
+
+```sh
+./install-desktop.sh
+```
+
+脚本会写入 `~/.local/share/applications/blender-linux-arm64.desktop`，并把图标复制到
+`~/.local/share/icons`。如果移动了解压目录，需要重新运行。
+
+包内也带有 `share/applications/blender-linux-arm64.desktop`；该文件使用 `Exec=blender`，适合手动把 `bin/` 加入 PATH 的场景。
+
+`BLENDER_STRIP_BINARIES=0 ./package-release.sh` 可跳过 strip 保留调试符号。
 
 ## 8. 本地构建
 
@@ -163,7 +204,7 @@ BLENDER_FREEDRENO_COMPAT=0 blender
 ```sh
 sudo apt update
 sudo apt install -y \
-  git git-lfs cmake ninja-build build-essential pkg-config dpkg-dev binutils \
+  git git-lfs cmake ninja-build build-essential pkg-config binutils desktop-file-utils \
   clang-21 lld-21 llvm-21 libclang-rt-21-dev python3 python3-dev xz-utils \
   libx11-dev libxxf86vm-dev libxi-dev libxfixes-dev libxrender-dev \
   libxrandr-dev libxcursor-dev libxinerama-dev libegl-dev libegl1-mesa-dev \
@@ -243,10 +284,10 @@ xvfb-run -a -s '-screen 0 1280x720x24' \
 
 ## 11. 产物与验收
 
-- `blender-linux-arm64_*.deb`；
-- `blender-<version>-source.tar.xz`；
+- `blender-<version>-linux-arm64-<os>-snapdragon8s.tar.xz`；
+- `blender-<version>-source.tar.xz`（GPL/审计用）；
 - `BUILD-INFO.json`：source/dependency commit、CPU flags、backend/feature matrix、Mesa/Freedreno、install size；
 - `SHA256SUMS`；
-- CI logs：`mesa-freedreno.log`、`vulkaninfo.log`、`verify.log`、`prune-install.json`、`compile-flags.json`、`package-proot.json`、`package-freedreno.json`。
+- CI logs：`mesa-freedreno.log`、`vulkaninfo.log`、`verify.log`、`prune-install.json`、`compile-flags.json`、`portable-proot.json`、`portable-freedreno.json`、`desktop-install.log`。
 
 CI 通过不等于真机通过。必须单独验证 Vulkan、OpenGL、Freedreno 检测和 Cycles CPU 渲染。

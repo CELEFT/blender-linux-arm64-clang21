@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Blender (Snapdragon ARM64)
+Comment=CPU Cycles, Vulkan and OpenGL Blender for Snapdragon 8s Gen 3
+Exec=blender %f
+TryExec=blender
+Icon=blender-linux-arm64
+Terminal=false
+Type=Application
+Categories=Graphics;3DGraphics;
+MimeType=application/x-blender;
+StartupWMClass=Blender
